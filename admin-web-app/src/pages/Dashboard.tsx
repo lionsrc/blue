@@ -72,7 +72,7 @@ export default function Dashboard() {
             await fetch(`${API_URL}/api/admin/users/${userId}/block`, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'text/plain'
                 },
                 credentials: 'include',
                 body: JSON.stringify({ block: currentlyActive }) // if currently active, send block: true
@@ -114,7 +114,7 @@ export default function Dashboard() {
             const res = await fetch(`${API_URL}/api/admin/nodes`, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'text/plain'
                 },
                 credentials: 'include',
                 body: JSON.stringify({ name: newNodeName, publicIp: newNodeIp })
