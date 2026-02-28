@@ -1,0 +1,24 @@
+name = "blue-management-worker"
+main = "src/index.ts"
+compatibility_date = "2024-04-03"
+
+# Configure these with `wrangler secret put` (or `.dev.vars` for local development):
+# JWT_SECRET
+# AGENT_SECRET
+# SESSION_TOKEN_SECRET
+# USAGE_REPORT_SECRET
+# CF_ACCESS_TEAM_DOMAIN
+# CF_ACCESS_AUD
+#
+# Optional:
+# ADMIN_ALLOW_EMAILS (comma-separated list)
+# CORS_ALLOW_ORIGINS (comma-separated list)
+
+[[d1_databases]]
+binding = "DB"
+database_name = "blue-proxy-management-db"
+database_id = "00000000-0000-0000-0000-000000000000" # Replace with actual D1 ID in production
+
+# Cron triggers for failover monitoring
+# [triggers]
+# crons = [ "*/5 * * * *" ] # Run every 5 minutes

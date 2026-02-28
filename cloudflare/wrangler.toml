@@ -1,0 +1,27 @@
+name = "blue-proxy-gateway-worker"
+main = "proxy_worker.js"
+compatibility_date = "2024-04-03"
+workers_dev = true
+
+# Set these before deploy:
+# - wrangler secret put SESSION_TOKEN_SECRET
+# - wrangler secret put USAGE_REPORT_SECRET
+
+[vars]
+# First production deploy should use a single active node.
+# Set this to the only node that is marked active in the management DB.
+BACKEND_HOST = "REPLACE_WITH_ACTIVE_NODE_IP:443"
+MANAGEMENT_API_URL = "https://api.blue2000.cc"
+
+[[routes]]
+pattern = "gw.blue2000.cc"
+custom_domain = true
+
+[durable_objects]
+bindings = [
+  { name = "SESSION_LOCKS", class_name = "SessionGateDurableObject" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionGateDurableObject"]

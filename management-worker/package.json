@@ -1,0 +1,25 @@
+{
+	"name": "management-worker",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"test": "vitest",
+		"cf-typegen": "wrangler types"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.12.4",
+		"@cloudflare/workers-types": "^4.20260305.0",
+		"@types/uuid": "^10.0.0",
+		"typescript": "^5.5.2",
+		"vitest": "~3.2.0",
+		"wrangler": "^3.101.0"
+	},
+	"dependencies": {
+		"@tsndr/cloudflare-worker-jwt": "^3.2.1",
+		"hono": "^4.12.3",
+		"uuid": "^13.0.0"
+	}
+}
