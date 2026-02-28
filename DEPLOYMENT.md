@@ -33,6 +33,7 @@ npx wrangler login
 ```
 
 3. Decide on the first proxy node public IP. You will use that value as the initial `BACKEND_HOST`.
+   The current node bootstrap exposes plain WebSocket on port `443`, so the first deploy should use `BACKEND_SCHEME=http`.
 
 ## 2. Create The D1 Database
 
@@ -104,8 +105,9 @@ The existing [`/Users/liondad/dev/blue/management-worker/wrangler.toml`](/Users/
 
 From [`/Users/liondad/dev/blue/cloudflare`](/Users/liondad/dev/blue/cloudflare):
 
-1. Edit [`/Users/liondad/dev/blue/cloudflare/wrangler.toml`](/Users/liondad/dev/blue/cloudflare/wrangler.toml):
-   set `BACKEND_HOST` to your first node public IP plus port `443`.
+1. Edit [`/Users/liondad/dev/blue/cloudflare/wrangler.toml`](/Users/liondad/dev/blue/cloudflare/wrangler.toml) if needed:
+   `BACKEND_HOST` should be your active node origin plus port `443`, and `BACKEND_SCHEME` should stay `http` with the current Xray bootstrap.
+   The current file is already set to `198.23.138.147:443`.
 
 2. Set shared secrets:
 
@@ -127,6 +129,7 @@ The provided [`/Users/liondad/dev/blue/cloudflare/wrangler.toml`](/Users/liondad
 - binds the `SESSION_LOCKS` Durable Object
 - declares the initial Durable Object migration
 - attaches the worker to the custom domain `gw.blue2000.cc`
+- uses `BACKEND_SCHEME=http` for the current non-TLS node origin
 - points `MANAGEMENT_API_URL` at `https://api.blue2000.cc`
 
 ## 6. Deploy The User Portal (`blue2000.cc`)

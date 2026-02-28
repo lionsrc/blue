@@ -10,7 +10,8 @@ workers_dev = true
 [vars]
 # First production deploy should use a single active node.
 # Set this to the only node that is marked active in the management DB.
-BACKEND_HOST = "REPLACE_WITH_ACTIVE_NODE_IP:443"
+BACKEND_HOST = "198.23.138.147:443"
+BACKEND_SCHEME = "http"
 MANAGEMENT_API_URL = "https://api.blue2000.cc"
 
 [[routes]]

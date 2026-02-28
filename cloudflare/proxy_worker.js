@@ -4,6 +4,7 @@
  *
  * Required bindings:
  * - BACKEND_HOST: host[:port] for the active Xray node origin
+ * - BACKEND_SCHEME: http or https for the origin connection (defaults to http)
  * - SESSION_TOKEN_SECRET: shared with the management worker
  * - SESSION_LOCKS: Durable Object binding for per-user session coordination
  * - MANAGEMENT_API_URL: management worker base URL
@@ -87,10 +88,18 @@ async function verifySessionToken(token, secret) {
     }
 }
 
-function buildBackendRequest(request, backendHost, backendPath = '/sp-ws') {
+function normalizeBackendScheme(value) {
+    if (value === 'https') {
+        return 'https:';
+    }
+
+    return 'http:';
+}
+
+function buildBackendRequest(request, backendHost, backendPath = '/sp-ws', backendScheme = 'http') {
     const backendUrl = new URL(request.url);
     backendUrl.host = backendHost;
-    backendUrl.protocol = 'https:';
+    backendUrl.protocol = normalizeBackendScheme(backendScheme);
     backendUrl.pathname = backendPath;
 
     return new Request(backendUrl.toString(), request);
@@ -189,7 +198,9 @@ export class SessionGateDurableObject {
             return new Response('Backend configuration missing', { status: 500 });
         }
 
-        const upstreamResponse = await fetch(buildBackendRequest(request, this.env.BACKEND_HOST, '/sp-ws'));
+        const upstreamResponse = await fetch(
+            buildBackendRequest(request, this.env.BACKEND_HOST, '/sp-ws', this.env.BACKEND_SCHEME),
+        );
         if (!upstreamResponse.webSocket) {
             return new Response('Unable to connect to backend websocket', { status: 502 });
         }

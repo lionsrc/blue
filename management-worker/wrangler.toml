@@ -17,7 +17,7 @@ compatibility_date = "2024-04-03"
 [[d1_databases]]
 binding = "DB"
 database_name = "blue-proxy-management-db"
-database_id = "00000000-0000-0000-0000-000000000000" # Replace with actual D1 ID in production
+database_id = "4a92c4fd-d9a6-4933-b05a-fde0de2ef730"
 
 # Cron triggers for failover monitoring
 # [triggers]
