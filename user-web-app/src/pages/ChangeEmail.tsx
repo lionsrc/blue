@@ -5,24 +5,57 @@ import { useTranslation } from 'react-i18next';
 
 export default function ChangeEmail() {
     const navigate = useNavigate();
-    const [currentEmail, setCurrentEmail] = useState('user@example.com');
+    const [currentEmail, setCurrentEmail] = useState('');
     const [newEmail, setNewEmail] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [successMessage, setSuccessMessage] = useState('');
+    const [error, setError] = useState('');
     const { t } = useTranslation();
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8787';
+    const token = localStorage.getItem('token');
 
-    const handleSubmit = (e: React.FormEvent) => {
+    React.useEffect(() => {
+        const fetchEmail = async () => {
+            try {
+                const res = await fetch(`${apiUrl}/api/me`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setCurrentEmail(data.user?.email || '');
+                }
+            } catch { /* ignore */ }
+        };
+        fetchEmail();
+    }, [apiUrl, token]);
+
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setIsSubmitting(true);
-        // Simulate API call
-        setTimeout(() => {
-            console.log('Email changed to:', newEmail);
+        setError('');
+        try {
+            const res = await fetch(`${apiUrl}/api/change-email`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'text/plain',
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({ newEmail }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                setError(data.error || 'Failed to update email');
+                return;
+            }
             setCurrentEmail(newEmail);
             setNewEmail('');
-            setIsSubmitting(false);
             setSuccessMessage(t('email.success'));
             setTimeout(() => setSuccessMessage(''), 3000);
-        }, 1000);
+        } catch {
+            setError('Network error');
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     return (
@@ -50,6 +83,12 @@ export default function ChangeEmail() {
                     {successMessage && (
                         <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 p-4 rounded-xl mb-6 flex items-center">
                             <FiCheck className="mr-2" /> {successMessage}
+                        </div>
+                    )}
+
+                    {error && (
+                        <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl mb-6">
+                            {error}
                         </div>
                     )}
 

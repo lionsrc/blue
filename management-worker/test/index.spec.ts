@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import * as jwt from '@tsndr/cloudflare-worker-jwt';
 import worker from '../src';
+import { _resetRateLimitBucketsForTesting } from '../src/auth';
 
 type UserRow = {
 	id: string;
@@ -185,6 +186,27 @@ class FakeD1Database {
 			return null;
 		}
 
+		if (sql.includes('SELECT id, tier, subscriptionPlan, subscriptionEndDate, bandwidthLimitMbps, isActive, currentUsagePeriodStart, currentPeriodBytesUsed')) {
+			const user = this.users.get(String(args[0]));
+			if (!user) return null;
+			return {
+				id: user.id,
+				tier: user.tier,
+				subscriptionPlan: user.subscriptionPlan ?? user.tier,
+				subscriptionEndDate: user.subscriptionEndDate ?? null,
+				bandwidthLimitMbps: user.bandwidthLimitMbps,
+				isActive: user.isActive,
+				currentUsagePeriodStart: user.currentUsagePeriodStart ?? null,
+				currentPeriodBytesUsed: user.currentPeriodBytesUsed,
+			} as T;
+		}
+
+		if (sql.includes('SELECT passwordHash FROM Users WHERE id = ?')) {
+			const user = this.users.get(String(args[0]));
+			if (!user) return null;
+			return { passwordHash: user.passwordHash } as T;
+		}
+
 		throw new Error(`Unhandled first() SQL: ${sql}`);
 	}
 
@@ -246,13 +268,13 @@ class FakeD1Database {
 		}
 
 		if (sql.includes('UPDATE Users') && sql.includes('subscriptionPlan = ?')) {
-			const [tier, subscriptionPlan, subscriptionEndDate, bandwidthLimitMbps, userId] = args as [string, string, string | null, number, string];
+			const [tier, subscriptionPlan, bandwidthLimitMbps, subscriptionEndDate, userId] = args as [string, string, number, string | null, string];
 			const user = this.users.get(userId);
 			if (!user) throw new Error('User not found');
 			user.tier = tier;
 			user.subscriptionPlan = subscriptionPlan;
-			user.subscriptionEndDate = subscriptionEndDate;
 			user.bandwidthLimitMbps = bandwidthLimitMbps;
+			user.subscriptionEndDate = subscriptionEndDate;
 			return { success: true };
 		}
 
@@ -273,6 +295,36 @@ class FakeD1Database {
 			user.totalBytesUsed = totalBytesUsed;
 			user.currentUsagePeriodStart = currentUsagePeriodStart;
 			user.currentPeriodBytesUsed = currentPeriodBytesUsed;
+			return { success: true };
+		}
+
+		if (sql.includes('UPDATE Users SET email = ? WHERE id = ?')) {
+			const [email, userId] = args as [string, string];
+			const user = this.users.get(userId);
+			if (!user) throw new Error('User not found');
+			// Check for UNIQUE email constraint
+			for (const u of this.users.values()) {
+				if (u.email === email && u.id !== userId) throw new Error('UNIQUE constraint failed');
+			}
+			user.email = email;
+			return { success: true };
+		}
+
+		if (sql.includes('DELETE FROM UserAllocations WHERE userId = ?')) {
+			const userId = String(args[0]);
+			this.allocations = this.allocations.filter((a) => a.userId !== userId);
+			return { success: true };
+		}
+
+		if (sql.includes('DELETE FROM Payments WHERE userId = ?')) {
+			const userId = String(args[0]);
+			this.payments = this.payments.filter((p) => p.userId !== userId);
+			return { success: true };
+		}
+
+		if (sql.includes('DELETE FROM Users WHERE id = ?')) {
+			const userId = String(args[0]);
+			this.users.delete(userId);
 			return { success: true };
 		}
 
@@ -322,6 +374,15 @@ class FakeD1Database {
 			} as { results: T[] };
 		}
 
+		if (sql.includes('FROM Payments WHERE userId = ?')) {
+			const userId = String(args[0]);
+			return {
+				results: this.payments
+					.filter((p) => p.userId === userId)
+					.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+			} as { results: T[] };
+		}
+
 		throw new Error(`Unhandled all() SQL: ${sql}`);
 	}
 }
@@ -350,7 +411,34 @@ describe('management worker API', () => {
 
 	beforeEach(() => {
 		env = createEnv();
+		_resetRateLimitBucketsForTesting();
 	});
+
+	const signupAndLogin = async (testEnv: TestEnv, email: string, password: string) => {
+		const signupRes = await worker.fetch(
+			new Request('http://example.com/api/signup', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email, password }),
+			}),
+			testEnv as never,
+			createExecutionContext(),
+		);
+		const signupData = await signupRes.json() as { userId: string };
+		const userId = signupData.userId;
+
+		const loginRes = await worker.fetch(
+			new Request('http://example.com/api/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email, password }),
+			}),
+			testEnv as never,
+			createExecutionContext(),
+		);
+		const loginData = await loginRes.json() as { accessToken: string };
+		return { accessToken: loginData.accessToken, userId };
+	};
 
 	it('hashes passwords on signup', async () => {
 		const response = await worker.fetch(
@@ -720,5 +808,140 @@ describe('management worker API', () => {
 		expect(loginResponse.status).toBe(200);
 		const loginData = await loginResponse.json() as { accessToken: string };
 		expect(loginData.accessToken).toBeTruthy();
+	});
+
+	it('updates email via PUT /api/change-email', async () => {
+		const { accessToken } = await signupAndLogin(env, 'emailtest@example.com', 'strong-pass');
+
+		const response = await worker.fetch(
+			new Request('http://example.com/api/change-email', {
+				method: 'PUT',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${accessToken}`,
+				},
+				body: JSON.stringify({ newEmail: 'new@example.com' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(response.status).toBe(200);
+		const data = await response.json() as { email: string };
+		expect(data.email).toBe('new@example.com');
+	});
+
+	it('updates password via PUT /api/change-password', async () => {
+		const { accessToken } = await signupAndLogin(env, 'passtest@example.com', 'old-pass-123');
+
+		const response = await worker.fetch(
+			new Request('http://example.com/api/change-password', {
+				method: 'PUT',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${accessToken}`,
+				},
+				body: JSON.stringify({ currentPassword: 'old-pass-123', newPassword: 'new-pass-456' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(response.status).toBe(200);
+
+		// Verify old password no longer works
+		const oldLogin = await worker.fetch(
+			new Request('http://example.com/api/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'passtest@example.com', password: 'old-pass-123' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+		expect(oldLogin.status).toBe(401);
+
+		// Verify new password works
+		const newLogin = await worker.fetch(
+			new Request('http://example.com/api/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'passtest@example.com', password: 'new-pass-456' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+		expect(newLogin.status).toBe(200);
+	});
+
+	it('deletes account via DELETE /api/account', async () => {
+		const { accessToken, userId } = await signupAndLogin(env, 'delete-me@example.com', 'strong-pass');
+
+		// Seed a payment for this user
+		env.DB.payments.push({
+			id: 'pay-1', userId, amount: 10, currency: 'USD',
+			status: 'completed', paymentMethod: null, packageId: 'basic',
+			createdAt: new Date().toISOString(),
+		});
+
+		const response = await worker.fetch(
+			new Request('http://example.com/api/account', {
+				method: 'DELETE',
+				headers: { Authorization: `Bearer ${accessToken}` },
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(response.status).toBe(200);
+		expect(env.DB.users.has(userId)).toBe(false);
+		expect(env.DB.payments.filter((p) => p.userId === userId)).toHaveLength(0);
+	});
+
+	it('returns payment history via GET /api/payments/history', async () => {
+		const { accessToken, userId } = await signupAndLogin(env, 'history@example.com', 'strong-pass');
+
+		// Seed payments
+		env.DB.payments.push(
+			{ id: 'p1', userId, amount: 18, currency: 'USD', status: 'completed', paymentMethod: 'crypto', packageId: 'basic', createdAt: '2026-01-01T00:00:00Z' },
+			{ id: 'p2', userId, amount: 38, currency: 'USD', status: 'completed', paymentMethod: 'card', packageId: 'pro', createdAt: '2026-02-01T00:00:00Z' },
+		);
+
+		const response = await worker.fetch(
+			new Request('http://example.com/api/payments/history', {
+				headers: { Authorization: `Bearer ${accessToken}` },
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(response.status).toBe(200);
+		const data = await response.json() as { payments: { id: string }[] };
+		expect(data.payments).toHaveLength(2);
+		// Most recent first
+		expect(data.payments[0].id).toBe('p2');
+	});
+
+	it('downgrades expired subscriptions to free in /api/me', async () => {
+		const { accessToken, userId } = await signupAndLogin(env, 'expired@example.com', 'strong-pass');
+
+		// Set user to basic with an expired subscription
+		const user = env.DB.users.get(userId)!;
+		user.tier = 'basic';
+		user.subscriptionPlan = 'basic';
+		user.subscriptionEndDate = '2020-01-01T00:00:00Z'; // long ago
+
+		const response = await worker.fetch(
+			new Request('http://example.com/api/me', {
+				headers: { Authorization: `Bearer ${accessToken}` },
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		const body = await response.json() as { user: { tier: string; subscriptionPlan: string } };
+		expect(response.status).toBe(200);
+		expect(body.user.tier).toBe('free');
+		expect(body.user.subscriptionPlan).toBe('free');
 	});
 });

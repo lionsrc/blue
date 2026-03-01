@@ -217,6 +217,24 @@ export class SessionGateDurableObject {
         const currentConnection = { client: server, upstream: upstreamSocket, closed: false };
         this.activeConnections.add(currentConnection);
 
+        // Periodic usage flush every 5 minutes to avoid losing data for long-lived sessions
+        const USAGE_FLUSH_INTERVAL_MS = 5 * 60 * 1000;
+        const usageFlushInterval = setInterval(() => {
+            if (currentConnection.closed || totalBytesTransferred === 0) return;
+
+            const bytesToReport = totalBytesTransferred;
+            totalBytesTransferred = 0;
+
+            const flushPromise = reportUsage(this.env, userId, bytesToReport)
+                .catch((error) => console.error('Failed to flush periodic usage', error));
+
+            if (typeof this.state.waitUntil === 'function') {
+                this.state.waitUntil(flushPromise);
+            } else {
+                void flushPromise;
+            }
+        }, USAGE_FLUSH_INTERVAL_MS);
+
         const closeConnection = (code = 1000, reason = 'Session closed') => {
             if (currentConnection.closed) {
                 return;
@@ -224,7 +242,9 @@ export class SessionGateDurableObject {
 
             currentConnection.closed = true;
             this.activeConnections.delete(currentConnection);
+            clearInterval(usageFlushInterval);
 
+            // Report any remaining bytes not yet flushed
             if (totalBytesTransferred > 0) {
                 const usagePromise = reportUsage(this.env, userId, totalBytesTransferred)
                     .catch((error) => console.error('Failed to report usage', error));

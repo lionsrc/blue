@@ -7,19 +7,34 @@ export default function DeleteAccount() {
     const navigate = useNavigate();
     const [confirmText, setConfirmText] = useState('');
     const [isDeleting, setIsDeleting] = useState(false);
+    const [error, setError] = useState('');
     const { t } = useTranslation();
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8787';
+    const token = localStorage.getItem('token');
 
-    const handleDelete = (e: React.FormEvent) => {
+    const handleDelete = async (e: React.FormEvent) => {
         e.preventDefault();
         if (confirmText !== 'DELETE') return;
 
         setIsDeleting(true);
-        // Simulate API call
-        setTimeout(() => {
-            console.log('Account deleted');
+        setError('');
+        try {
+            const res = await fetch(`${apiUrl}/api/account`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!res.ok) {
+                const data = await res.json();
+                setError(data.error || 'Failed to delete account');
+                setIsDeleting(false);
+                return;
+            }
             localStorage.removeItem('token');
             navigate('/login');
-        }, 1500);
+        } catch {
+            setError('Network error');
+            setIsDeleting(false);
+        }
     };
 
     return (
@@ -63,6 +78,11 @@ export default function DeleteAccount() {
                         </ul>
                     </div>
 
+                    {error && (
+                        <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl mb-6 max-w-lg mx-auto text-center">
+                            {error}
+                        </div>
+                    )}
                     <form onSubmit={handleDelete} className="max-w-md mx-auto space-y-6">
                         <div>
                             <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">

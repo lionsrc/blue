@@ -6,13 +6,52 @@ import clsx from 'clsx';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL || '';
 
+interface AdminUser {
+    id: string;
+    email: string;
+    tier: string;
+    subscriptionPlan: string;
+    isActive: number;
+    bandwidthLimitMbps: number;
+    creditBalance: number;
+    totalBytesUsed: number;
+    currentPeriodBytesUsed: number;
+    subscriptionEndDate: string | null;
+    lastConnectTime: string | null;
+    lastConnectIp: string | null;
+    lastClientSoftware: string | null;
+    createdAt: string;
+    nodeId: string | null;
+    port: number | null;
+}
+
+interface AdminNode {
+    id: string;
+    name: string;
+    publicIp: string;
+    status: string;
+    activeConnections: number;
+    cpuLoad: number;
+    lastPing: string | null;
+    allocationCount: number;
+}
+
+interface AdminPayment {
+    id: string;
+    amount: number;
+    currency: string;
+    status: string;
+    paymentMethod: string | null;
+    createdAt: string;
+}
+
 export default function Dashboard() {
     const { adminEmail, refreshSession, signOut } = useAuth();
     const [activeTab, setActiveTab] = useState<'users' | 'nodes' | 'monitoring'>('users');
 
     // --- Data State ---
-    const [users, setUsers] = useState<any[]>([]);
-    const [nodes, setNodes] = useState<any[]>([]);
+    const [users, setUsers] = useState<AdminUser[]>([]);
+    const [nodes, setNodes] = useState<AdminNode[]>([]);
     const [isLoading, setIsLoading] = useState(true);
 
     // --- Add Node Modal State ---
@@ -22,8 +61,8 @@ export default function Dashboard() {
     const [isAddingNode, setIsAddingNode] = useState(false);
 
     // --- User Details Modal State ---
-    const [selectedUser, setSelectedUser] = useState<any | null>(null);
-    const [userPayments, setUserPayments] = useState<any[]>([]);
+    const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
+    const [userPayments, setUserPayments] = useState<AdminPayment[]>([]);
     const [isLoadingPayments, setIsLoadingPayments] = useState(false);
 
     const formatBytes = (bytes: number | null | undefined) => {
@@ -84,7 +123,7 @@ export default function Dashboard() {
         }
     };
 
-    const handleViewUser = async (user: any) => {
+    const handleViewUser = async (user: AdminUser) => {
         setSelectedUser(user);
         setIsLoadingPayments(true);
         try {

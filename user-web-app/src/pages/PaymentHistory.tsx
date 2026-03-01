@@ -1,18 +1,39 @@
+import { useState, useEffect } from 'react';
 import { FiArrowLeft, FiClock, FiCheckCircle, FiXCircle } from 'react-icons/fi';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
+type Payment = {
+    id: string;
+    createdAt: string;
+    amount: number;
+    paymentMethod: string | null;
+    status: string;
+};
+
 export default function PaymentHistory() {
     const navigate = useNavigate();
     const { t } = useTranslation();
+    const [payments, setPayments] = useState<Payment[]>([]);
+    const [loading, setLoading] = useState(true);
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8787';
+    const token = localStorage.getItem('token');
 
-    // Mock payment data
-    const payments = [
-        { id: 'pay_1A2b3C', date: '2026-02-25', amount: 10.00, method: 'Crypto (USDT)', status: 'completed' },
-        { id: 'pay_4D5e6F', date: '2026-01-20', amount: 25.00, method: 'Credit Card', status: 'completed' },
-        { id: 'pay_7G8h9I', date: '2025-12-15', amount: 10.00, method: 'Crypto (USDT)', status: 'failed' },
-        { id: 'pay_0J1k2L', date: '2025-11-01', amount: 50.00, method: 'Crypto (USDT)', status: 'completed' },
-    ];
+    useEffect(() => {
+        const fetchPayments = async () => {
+            try {
+                const res = await fetch(`${apiUrl}/api/payments/history`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setPayments(data.payments || []);
+                }
+            } catch { /* ignore */ }
+            finally { setLoading(false); }
+        };
+        fetchPayments();
+    }, [apiUrl, token]);
 
     return (
         <div className="min-h-screen bg-[#0a0a0a] text-slate-200 relative overflow-hidden font-sans">
@@ -50,8 +71,8 @@ export default function PaymentHistory() {
                                 {payments.map((payment, index) => (
                                     <tr key={payment.id} className={`border-b border-white/5 hover:bg-white/[0.02] transition-colors ${index === payments.length - 1 ? 'border-b-0' : ''}`}>
                                         <td className="py-4 px-6 font-mono text-slate-300 text-sm">{payment.id}</td>
-                                        <td className="py-4 px-6 text-slate-400">{payment.date}</td>
-                                        <td className="py-4 px-6 text-slate-300">{payment.method}</td>
+                                        <td className="py-4 px-6 text-slate-400">{payment.createdAt}</td>
+                                        <td className="py-4 px-6 text-slate-300">{payment.paymentMethod || '—'}</td>
                                         <td className="py-4 px-6 text-right font-bold text-white">${payment.amount.toFixed(2)}</td>
                                         <td className="py-4 px-6 text-center">
                                             {payment.status === 'completed' ? (
@@ -68,7 +89,12 @@ export default function PaymentHistory() {
                                 ))}
                             </tbody>
                         </table>
-                        {payments.length === 0 && (
+                        {loading && (
+                            <div className="py-12 text-center text-slate-500">
+                                Loading...
+                            </div>
+                        )}
+                        {!loading && payments.length === 0 && (
                             <div className="py-12 text-center text-slate-500">
                                 {t('history.noHistory')}
                             </div>

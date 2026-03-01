@@ -12,8 +12,10 @@ export default function ChangePassword() {
     const [successMessage, setSuccessMessage] = useState('');
     const [error, setError] = useState('');
     const { t } = useTranslation();
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8787';
+    const token = localStorage.getItem('token');
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
 
@@ -23,16 +25,30 @@ export default function ChangePassword() {
         }
 
         setIsSubmitting(true);
-        // Simulate API call
-        setTimeout(() => {
-            console.log('Password changed successfully');
+        try {
+            const res = await fetch(`${apiUrl}/api/change-password`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'text/plain',
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({ currentPassword, newPassword }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                setError(data.error || 'Failed to update password');
+                return;
+            }
             setCurrentPassword('');
             setNewPassword('');
             setConfirmPassword('');
-            setIsSubmitting(false);
             setSuccessMessage(t('password.success'));
             setTimeout(() => setSuccessMessage(''), 3000);
-        }, 1000);
+        } catch {
+            setError('Network error');
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     return (
