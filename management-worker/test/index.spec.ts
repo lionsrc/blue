@@ -304,6 +304,15 @@ class FakeD1Database {
 			} as { results: T[] };
 		}
 
+		if (sql.includes('SELECT port FROM UserAllocations WHERE nodeId = ?')) {
+			const nodeId = String(args[0]);
+			return {
+				results: this.allocations
+					.filter((allocation) => allocation.nodeId === nodeId)
+					.map((allocation) => ({ port: allocation.port })),
+			} as { results: T[] };
+		}
+
 		if (sql.includes('FROM UserAllocations WHERE nodeId = ?')) {
 			const nodeId = String(args[0]);
 			return {
@@ -360,15 +369,22 @@ describe('management worker API', () => {
 		expect(response.status).toBe(200);
 		const storedUser = Array.from(env.DB.users.values())[0];
 		expect(storedUser.email).toBe('alice@example.com');
-		expect(storedUser.passwordHash).toMatch(/^sha256:/);
+		expect(storedUser.passwordHash).toMatch(/^pbkdf2:/);
 		expect(storedUser.passwordHash).not.toBe('super-secret');
 	});
 
-	it('migrates legacy plaintext passwords on login', async () => {
+	it('migrates legacy sha256 passwords to pbkdf2 on login', async () => {
+		// Pre-hash a password using the legacy sha256 scheme to seed the DB
+		const legacySalt = 'deadbeef';
+		const legacyData = new TextEncoder().encode(`${legacySalt}:legacy-pass`);
+		const legacyDigest = await crypto.subtle.digest('SHA-256', legacyData);
+		const legacyHex = Array.from(new Uint8Array(legacyDigest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+		const legacyHash = `sha256:${legacySalt}:${legacyHex}`;
+
 		env.DB.users.set('user-1', {
 			id: 'user-1',
 			email: 'legacy@example.com',
-			passwordHash: 'old-password',
+			passwordHash: legacyHash,
 			tier: 'free',
 			isActive: 1,
 			bandwidthLimitMbps: 1,
@@ -386,7 +402,7 @@ describe('management worker API', () => {
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					email: 'legacy@example.com',
-					password: 'old-password',
+					password: 'legacy-pass',
 				}),
 			}),
 			env as never,
@@ -396,7 +412,72 @@ describe('management worker API', () => {
 		expect(response.status).toBe(200);
 		const data = await response.json() as { accessToken: string };
 		expect(data.accessToken).toBeTruthy();
-		expect(env.DB.users.get('user-1')?.passwordHash).toMatch(/^sha256:/);
+		// After login, the hash should be upgraded to pbkdf2
+		expect(env.DB.users.get('user-1')?.passwordHash).toMatch(/^pbkdf2:/);
+	});
+
+	it('rejects plaintext passwords that are not hashed', async () => {
+		env.DB.users.set('user-plain', {
+			id: 'user-plain',
+			email: 'plain@example.com',
+			passwordHash: 'plaintext-password',
+			tier: 'free',
+			isActive: 1,
+			bandwidthLimitMbps: 1,
+			creditBalance: 0,
+			totalBytesUsed: 0,
+			currentUsagePeriodStart: null,
+			currentPeriodBytesUsed: 0,
+			subscriptionPlan: 'free',
+			subscriptionEndDate: null,
+		});
+
+		const response = await worker.fetch(
+			new Request('http://example.com/api/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					email: 'plain@example.com',
+					password: 'plaintext-password',
+				}),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(response.status).toBe(401);
+	});
+
+	it('issues JWT tokens with an expiry claim', async () => {
+		// Signup a user first
+		await worker.fetch(
+			new Request('http://example.com/api/signup', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'exp@example.com', password: 'test-pass-123' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		const response = await worker.fetch(
+			new Request('http://example.com/api/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'exp@example.com', password: 'test-pass-123' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(response.status).toBe(200);
+		const data = await response.json() as { accessToken: string };
+		const decoded = jwt.decode(data.accessToken);
+		const payload = decoded.payload as { exp?: number };
+		expect(payload.exp).toBeDefined();
+		// Verify expiry is roughly 24 hours from now (within 60s tolerance)
+		const expectedExp = Math.floor(Date.now() / 1000) + 86400;
+		expect(Math.abs((payload.exp as number) - expectedExp)).toBeLessThan(60);
 	});
 
 	it('syncs node config and stores posted health metrics', async () => {
@@ -606,5 +687,38 @@ describe('management worker API', () => {
 		expect(await response.json()).toEqual({
 			error: 'Cloudflare Access authentication required',
 		});
+	});
+
+	it('uses PBKDF2 for new signups', async () => {
+		const response = await worker.fetch(
+			new Request('http://example.com/api/signup', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'pbkdf2@example.com', password: 'strong-pass' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(response.status).toBe(200);
+		const storedUser = Array.from(env.DB.users.values()).find((u) => u.email === 'pbkdf2@example.com');
+		expect(storedUser).toBeDefined();
+		expect(storedUser!.passwordHash).toMatch(/^pbkdf2:/);
+		expect(storedUser!.passwordHash).not.toBe('strong-pass');
+
+		// Verify login works with the PBKDF2 hash
+		const loginResponse = await worker.fetch(
+			new Request('http://example.com/api/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'pbkdf2@example.com', password: 'strong-pass' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(loginResponse.status).toBe(200);
+		const loginData = await loginResponse.json() as { accessToken: string };
+		expect(loginData.accessToken).toBeTruthy();
 	});
 });

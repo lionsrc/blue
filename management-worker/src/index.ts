@@ -67,14 +67,21 @@ type AccessJwk = JsonWebKey & {
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
-const HASH_PREFIX = 'sha256';
+const LEGACY_HASH_PREFIX = 'sha256';
+const HASH_PREFIX = 'pbkdf2';
 const HASH_SCHEME_PREFIX = `${HASH_PREFIX}:`;
+const LEGACY_HASH_SCHEME_PREFIX = `${LEGACY_HASH_PREFIX}:`;
+const PBKDF2_ITERATIONS = 100_000;
+const PBKDF2_KEY_LENGTH_BITS = 256;
+const JWT_EXPIRY_SECONDS = 24 * 60 * 60; // 24 hours
 const DEFAULT_CORS_ORIGINS = [
 	'http://localhost:5173',
 	'http://localhost:5174',
 	'http://localhost:5175',
 ];
 const BYTES_PER_GB = 1024 * 1024 * 1024;
+const ALLOCATION_PORT_MIN = 10000;
+const ALLOCATION_PORT_MAX = 50000;
 const PLAN_ORDER: PlanId[] = ['free', 'basic', 'pro'];
 const PLAN_DEFINITIONS: Record<PlanId, PlanDefinition> = {
 	free: {
@@ -111,6 +118,38 @@ const PACKAGE_PLAN_MAP: Record<string, { planId: PlanId; monthsToAdd: number | n
 };
 const ACCESS_CERT_CACHE_TTL_MS = 5 * 60 * 1000;
 let accessJwkCache: { teamDomain: string; expiresAt: number; keys: AccessJwk[] } | null = null;
+
+// --- Rate Limiter ---
+const rateLimitBuckets = new Map<string, number[]>();
+
+const cleanupRateLimitBucket = (timestamps: number[], windowMs: number, now: number) =>
+	timestamps.filter((t) => t > now - windowMs);
+
+const createRateLimiter = (maxRequests: number, windowSeconds: number) => {
+	const windowMs = windowSeconds * 1000;
+
+	return async (c: any, next: any) => {
+		const clientIp = c.req.header('CF-Connecting-IP')
+			|| c.req.header('X-Forwarded-For')?.split(',')[0]?.trim()
+			|| 'unknown';
+		const bucketKey = `${c.req.path}:${clientIp}`;
+		const now = Date.now();
+
+		let timestamps = rateLimitBuckets.get(bucketKey) || [];
+		timestamps = cleanupRateLimitBucket(timestamps, windowMs, now);
+
+		if (timestamps.length >= maxRequests) {
+			return c.json({ error: 'Too many requests. Please try again later.' }, 429);
+		}
+
+		timestamps.push(now);
+		rateLimitBuckets.set(bucketKey, timestamps);
+		await next();
+	};
+};
+
+const authRateLimiter = createRateLimiter(10, 60);
+const paymentRateLimiter = createRateLimiter(20, 60);
 
 // Enable CORS for all routes
 app.use('/*', cors({
@@ -307,14 +346,36 @@ const createSalt = () => {
 	return toHex(bytes.buffer);
 };
 
-const hashPasswordWithSalt = async (password: string, salt: string) => {
+const legacyHashPasswordWithSalt = async (password: string, salt: string) => {
 	const data = new TextEncoder().encode(`${salt}:${password}`);
 	const digest = await crypto.subtle.digest('SHA-256', data);
-	return `${HASH_PREFIX}:${salt}:${toHex(digest)}`;
+	return `${LEGACY_HASH_PREFIX}:${salt}:${toHex(digest)}`;
+};
+
+const hashPasswordWithPbkdf2 = async (password: string, salt: string) => {
+	const encoder = new TextEncoder();
+	const keyMaterial = await crypto.subtle.importKey(
+		'raw',
+		encoder.encode(password),
+		'PBKDF2',
+		false,
+		['deriveBits'],
+	);
+	const derivedBits = await crypto.subtle.deriveBits(
+		{
+			name: 'PBKDF2',
+			salt: encoder.encode(salt),
+			iterations: PBKDF2_ITERATIONS,
+			hash: 'SHA-256',
+		},
+		keyMaterial,
+		PBKDF2_KEY_LENGTH_BITS,
+	);
+	return `${HASH_PREFIX}:${salt}:${toHex(derivedBits)}`;
 };
 
 const hashPassword = async (password: string) => {
-	return hashPasswordWithSalt(password, createSalt());
+	return hashPasswordWithPbkdf2(password, createSalt());
 };
 
 const signProxySessionToken = async (c: any, payload: ProxySessionPayload) => {
@@ -334,12 +395,18 @@ const signProxySessionToken = async (c: any, payload: ProxySessionPayload) => {
 
 const verifyPassword = async (password: string, storedValue: string) => {
 	const [prefix, salt, expectedHash] = storedValue.split(':');
-	if (prefix !== HASH_PREFIX || !salt || !expectedHash) {
-		return false;
+
+	if (prefix === HASH_PREFIX && salt && expectedHash) {
+		const candidate = await hashPasswordWithPbkdf2(password, salt);
+		return candidate === storedValue;
 	}
 
-	const candidate = await hashPasswordWithSalt(password, salt);
-	return candidate === storedValue;
+	if (prefix === LEGACY_HASH_PREFIX && salt && expectedHash) {
+		const candidate = await legacyHashPasswordWithSalt(password, salt);
+		return candidate === storedValue;
+	}
+
+	return false;
 };
 
 const parseNumericValue = (value: unknown) => {
@@ -394,7 +461,7 @@ const authenticateToken = async (c: any, next: any) => {
 
 // --- Routes: User Portal ---
 
-app.post('/api/signup', async (c: any) => {
+app.post('/api/signup', authRateLimiter, async (c: any) => {
 	const { email, password } = await c.req.json();
 	if (!email || !password) return c.json({ error: "Email and password required" }, 400);
 
@@ -412,7 +479,7 @@ app.post('/api/signup', async (c: any) => {
 	}
 });
 
-app.post('/api/login', async (c: any) => {
+app.post('/api/login', authRateLimiter, async (c: any) => {
 	const { email, password } = await c.req.json();
 
 	const user = await c.env.DB.prepare(
@@ -427,13 +494,12 @@ app.post('/api/login', async (c: any) => {
 		return c.json({ error: "Account is blocked" }, 403);
 	}
 
-	let passwordValid = await verifyPassword(password, user.passwordHash);
-	if (!passwordValid && !user.passwordHash.startsWith(HASH_SCHEME_PREFIX)) {
-		passwordValid = user.passwordHash === password;
-		if (passwordValid) {
-			const upgradedHash = await hashPassword(password);
-			await c.env.DB.prepare(`UPDATE Users SET passwordHash = ? WHERE id = ?`).bind(upgradedHash, user.id).run();
-		}
+	const passwordValid = await verifyPassword(password, user.passwordHash);
+
+	// Auto-upgrade legacy sha256 hashes to PBKDF2 on successful login
+	if (passwordValid && user.passwordHash.startsWith(LEGACY_HASH_SCHEME_PREFIX)) {
+		const upgradedHash = await hashPassword(password);
+		await c.env.DB.prepare(`UPDATE Users SET passwordHash = ? WHERE id = ?`).bind(upgradedHash, user.id).run();
 	}
 
 	if (!passwordValid) {
@@ -443,7 +509,8 @@ app.post('/api/login', async (c: any) => {
 	let accessToken: string;
 	try {
 		const planId = resolvePlanId(user.subscriptionPlan, user.tier);
-		accessToken = await jwt.sign({ id: user.id, email: user.email, tier: planId }, requireSecret(c, 'JWT_SECRET'));
+		const exp = Math.floor(Date.now() / 1000) + JWT_EXPIRY_SECONDS;
+		accessToken = await jwt.sign({ id: user.id, email: user.email, tier: planId, exp }, requireSecret(c, 'JWT_SECRET'));
 	} catch (err) {
 		if (err instanceof Error && err.message.startsWith('Missing required secret:')) {
 			return c.json({ error: err.message }, 500);
@@ -554,9 +621,25 @@ app.get('/api/subscription', authenticateToken, async (c: any) => {
 			return c.json({ error: "No active proxy nodes or domains available currently." }, 503);
 		}
 
+		// Find an unused port on this node
+		const { results: existingAllocations } = await c.env.DB.prepare(
+			`SELECT port FROM UserAllocations WHERE nodeId = ?`
+		).bind(bestNode.id).all() as { results: { port: number }[] };
+		const usedPorts = new Set(existingAllocations.map((a: { port: number }) => a.port));
+
+		let port: number | null = null;
+		for (let candidate = ALLOCATION_PORT_MIN; candidate <= ALLOCATION_PORT_MAX; candidate++) {
+			if (!usedPorts.has(candidate)) {
+				port = candidate;
+				break;
+			}
+		}
+
+		if (port === null) {
+			return c.json({ error: 'No available ports on the proxy node.' }, 503);
+		}
+
 		const xrayUuid = uuidv4();
-		// In a real app we'd track used ports. For now, pseudo-random port 10000-50000
-		const port = Math.floor(Math.random() * 40000) + 10000;
 		const speedLimit = effectiveBandwidthLimit;
 
 		await c.env.DB.prepare(
@@ -745,7 +828,7 @@ app.post('/api/usage/report', async (c: any) => {
 });
 
 // ... (payment processing endpoint)
-app.post('/api/payments/process', authenticateToken, async (c: any) => {
+app.post('/api/payments/process', paymentRateLimiter, authenticateToken, async (c: any) => {
 	const currentUser = c.get('user');
 	const { amount, currency, paymentMethod, packageId } = await c.req.json();
 
