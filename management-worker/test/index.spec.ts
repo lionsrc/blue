@@ -303,8 +303,8 @@ class FakeD1Database {
 			return { success: true };
 		}
 
-		if (sql.includes('UPDATE Users SET email = ? WHERE id = ?')) {
-			const [email, userId] = args as [string, string];
+		if (sql.includes('UPDATE Users SET email = ?, emailVerified = 0, verificationCode = ? WHERE id = ?')) {
+			const [email, verificationCode, userId] = args as [string, string, string];
 			const user = this.users.get(userId);
 			if (!user) throw new Error('User not found');
 			// Check for UNIQUE email constraint
@@ -312,6 +312,8 @@ class FakeD1Database {
 				if (u.email === email && u.id !== userId) throw new Error('UNIQUE constraint failed');
 			}
 			user.email = email;
+			user.emailVerified = 0;
+			user.verificationCode = verificationCode;
 			return { success: true };
 		}
 
@@ -1014,7 +1016,7 @@ describe('management worker API', () => {
 		const user = Array.from(env.DB.users.values()).find((u) => u.email === 'verify-test@example.com');
 		expect(user).toBeDefined();
 		expect(user!.emailVerified).toBe(0);
-		expect(user!.verificationCode).toMatch(/^\d{6}$/);
+		expect(user!.verificationCode).toMatch(/^\d{6}:\d+$/);
 	});
 
 	it('blocks login for unverified users', async () => {
@@ -1056,7 +1058,8 @@ describe('management worker API', () => {
 		);
 
 		const user = Array.from(env.DB.users.values()).find((u) => u.email === 'code-test@example.com')!;
-		const code = user.verificationCode;
+		const codePayload = user.verificationCode;
+		const code = codePayload!.split(':')[0];
 
 		const verifyResponse = await worker.fetch(
 			new Request('http://example.com/api/verify-email', {

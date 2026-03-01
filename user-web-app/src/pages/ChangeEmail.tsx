@@ -47,6 +47,13 @@ export default function ChangeEmail() {
                 setError(data.error || 'Failed to update email');
                 return;
             }
+
+            if (data.requiresVerification) {
+                localStorage.removeItem('token');
+                navigate(`/verify-email?email=${encodeURIComponent(newEmail)}`);
+                return;
+            }
+
             setCurrentEmail(newEmail);
             setNewEmail('');
             setSuccessMessage(t('email.success'));

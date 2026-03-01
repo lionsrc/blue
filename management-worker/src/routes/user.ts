@@ -42,11 +42,13 @@ user.post('/api/signup', authRateLimiter, async (c: any) => {
     const passwordHash = await hashPassword(password);
     const userId = uuidv4();
     const verificationCode = String(Math.floor(100000 + Math.random() * 900000));
+    const expiry = Date.now() + 15 * 60 * 1000;
+    const verificationPayload = `${verificationCode}:${expiry}`;
 
     try {
         await c.env.DB.prepare(
             `INSERT INTO Users (id, email, passwordHash, emailVerified, verificationCode) VALUES (?, ?, ?, 0, ?)`
-        ).bind(userId, trimmedEmail, passwordHash, verificationCode).run();
+        ).bind(userId, trimmedEmail, passwordHash, verificationPayload).run();
     } catch (error) {
         return c.json({ error: "User already exists or database error" }, 500);
     }
@@ -147,8 +149,19 @@ user.post('/api/verify-email', authRateLimiter, async (c: any) => {
         return c.json({ message: 'Email already verified' });
     }
 
-    if (dbUser.verificationCode !== String(code).trim()) {
+    const storedPayload = dbUser.verificationCode;
+    if (!storedPayload) {
         return c.json({ error: 'Invalid verification code' }, 400);
+    }
+
+    const [storedCode, expiresAtStr] = storedPayload.split(':');
+
+    if (storedCode !== String(code).trim()) {
+        return c.json({ error: 'Invalid verification code' }, 400);
+    }
+
+    if (expiresAtStr && Date.now() > parseInt(expiresAtStr, 10)) {
+        return c.json({ error: 'Verification code expired. Please request a new one.' }, 400);
     }
 
     await c.env.DB.prepare(
@@ -178,10 +191,12 @@ user.post('/api/resend-verification', authRateLimiter, async (c: any) => {
     }
 
     const verificationCode = String(Math.floor(100000 + Math.random() * 900000));
+    const expiry = Date.now() + 15 * 60 * 1000;
+    const verificationPayload = `${verificationCode}:${expiry}`;
 
     await c.env.DB.prepare(
         `UPDATE Users SET verificationCode = ? WHERE id = ?`
-    ).bind(verificationCode, dbUser.id).run();
+    ).bind(verificationPayload, dbUser.id).run();
 
     const isZh = lang === 'zh';
     try {
@@ -445,9 +460,41 @@ user.put('/api/change-email', authenticateToken, async (c: any) => {
         return c.json({ error: 'Valid email address required' }, 400);
     }
 
+    const normalizedEmail = newEmail.trim().toLowerCase();
+
     try {
-        await c.env.DB.prepare(`UPDATE Users SET email = ? WHERE id = ?`).bind(newEmail.trim(), tokenUser.id).run();
-        return c.json({ message: 'Email updated successfully', email: newEmail.trim() });
+        const verificationCode = String(Math.floor(100000 + Math.random() * 900000));
+        const expiry = Date.now() + 15 * 60 * 1000;
+        const verificationPayload = `${verificationCode}:${expiry}`;
+
+        await c.env.DB.prepare(
+            `UPDATE Users SET email = ?, emailVerified = 0, verificationCode = ? WHERE id = ?`
+        ).bind(normalizedEmail, verificationPayload, tokenUser.id).run();
+
+        // Send new verification email
+        try {
+            const resendApiKey = requireSecret(c, 'RESEND_API_KEY');
+            const fromEmail = getOptionalBinding(c, 'RESEND_FROM_EMAIL') || 'onboarding@resend.dev';
+
+            // Assume English for change-email if lang param not passed, since we only have newEmail in this payload
+            await fetch('https://api.resend.com/emails', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${resendApiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    from: fromEmail,
+                    to: [normalizedEmail],
+                    subject: 'Verify your new email — Blue Lotus Network',
+                    html: `<h2>Email Address Updated</h2><p>Your new verification code is:</p><h1 style="letter-spacing: 6px; font-size: 36px; text-align: center; padding: 20px; background: #f0f0f0; border-radius: 8px;">${verificationCode}</h1><p>Please log in again and enter this code on the verification page to activate your account with this new email.</p>`,
+                }),
+            });
+        } catch (err) {
+            console.error('Failed to send target verification email:', err);
+        }
+
+        return c.json({ message: 'Email updated successfully. Please log in to verify your new email.', email: normalizedEmail, requiresVerification: true });
     } catch (error: any) {
         if (error.message?.includes('UNIQUE')) {
             return c.json({ error: 'Email already in use' }, 409);
