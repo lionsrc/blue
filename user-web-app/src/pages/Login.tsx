@@ -13,7 +13,7 @@ export default function Login({ mode = 'login' }: LoginProps) {
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
     const navigate = useNavigate();
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
     const isRegistering = mode === 'register';
     const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 
@@ -27,12 +27,17 @@ export default function Login({ mode = 'login' }: LoginProps) {
                 const signupResponse = await fetch(`${apiUrl}/api/signup`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email, password }),
+                    body: JSON.stringify({ email, password, lang: i18n.language?.startsWith('zh') ? 'zh' : 'en' }),
                 });
 
-                const signupData = await signupResponse.json() as { error?: string };
+                const signupData = await signupResponse.json() as { error?: string; requiresVerification?: boolean };
                 if (!signupResponse.ok) {
                     throw new Error(signupData.error || t('login.requestFailed'));
+                }
+
+                if (signupData.requiresVerification) {
+                    navigate(`/verify-email?email=${encodeURIComponent(email)}`);
+                    return;
                 }
             }
 
@@ -42,7 +47,13 @@ export default function Login({ mode = 'login' }: LoginProps) {
                 body: JSON.stringify({ email, password }),
             });
 
-            const loginData = await loginResponse.json() as { accessToken?: string; error?: string };
+            const loginData = await loginResponse.json() as { accessToken?: string; error?: string; requiresVerification?: boolean };
+
+            if (loginData.requiresVerification) {
+                navigate(`/verify-email?email=${encodeURIComponent(email)}`);
+                return;
+            }
+
             if (!loginResponse.ok || !loginData.accessToken) {
                 throw new Error(loginData.error || t('login.requestFailed'));
             }
@@ -72,8 +83,8 @@ export default function Login({ mode = 'login' }: LoginProps) {
                 </Link>
 
                 <div className="text-center mb-10">
-                    <div className="inline-flex w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-500 items-center justify-center text-slate-950 font-black text-3xl shadow-lg shadow-emerald-500/30 mb-6 transform group-hover:scale-110 group-hover:rotate-6 transition-all duration-500">
-                        BL
+                    <div className="inline-flex items-center justify-center p-1 rounded-3xl bg-white/5 border border-white/10 shadow-xl shadow-emerald-500/30 mb-6 transform group-hover:scale-105 group-hover:-rotate-3 transition-all duration-500">
+                        <img src="/assets/logo.png" alt="Blue Lotus Network Logo" className="h-20 w-20 object-contain rounded-2xl" />
                     </div>
                     <h1 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-slate-400 mb-2">
                         {isRegistering ? t('login.registerTitle') : t('login.title')}

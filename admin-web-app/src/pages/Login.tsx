@@ -1,4 +1,4 @@
-import { RefreshCw, ShieldAlert } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { useAuth } from '../auth';
 
 export default function Login() {
@@ -9,10 +9,10 @@ export default function Login() {
         <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
             <div className="bg-gray-800 p-8 rounded-2xl shadow-xl w-full max-w-md border border-gray-700">
                 <div className="flex flex-col items-center mb-8">
-                    <div className="w-16 h-16 bg-blue-600/20 rounded-full flex items-center justify-center mb-4 text-blue-500">
-                        <ShieldAlert size={32} />
+                    <div className="w-16 h-16 bg-blue-600/20 rounded-[20px] flex items-center justify-center mb-4 text-blue-500 shadow-xl shadow-blue-500/20 p-2">
+                        <img src="/assets/logo.png" alt="Blue Lotus Network Logo" className="w-full h-full object-contain rounded-xl" />
                     </div>
-                    <h1 className="text-2xl font-bold text-white">SuperProxy Admin</h1>
+                    <h1 className="text-2xl font-bold text-white">Blue Lotus Network Admin</h1>
                     <p className="text-gray-400 mt-2 text-center text-sm">
                         This portal is protected by Cloudflare Access.
                     </p>

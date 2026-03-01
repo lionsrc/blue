@@ -316,7 +316,7 @@ export default {
             const upgradeHeader = request.headers.get('Upgrade');
 
             if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
-                return new Response('SuperProxy Gateway Active', { status: 200 });
+                return new Response('Blue Lotus Network Gateway Active', { status: 200 });
             }
 
             if (!env.SESSION_TOKEN_SECRET) {

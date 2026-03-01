@@ -16,6 +16,8 @@ type UserRow = {
 	currentPeriodBytesUsed: number;
 	subscriptionPlan?: string;
 	subscriptionEndDate?: string | null;
+	emailVerified: number;
+	verificationCode?: string | null;
 };
 
 type NodeRow = {
@@ -56,6 +58,7 @@ type TestEnv = {
 	USAGE_REPORT_SECRET: string;
 	CF_ACCESS_TEAM_DOMAIN: string;
 	CF_ACCESS_AUD: string;
+	RESEND_API_KEY: string;
 };
 
 class FakeD1Statement {
@@ -212,7 +215,7 @@ class FakeD1Database {
 
 	async run(sql: string, args: unknown[]) {
 		if (sql.includes('INSERT INTO Users')) {
-			const [id, email, passwordHash] = args as [string, string, string];
+			const [id, email, passwordHash, verificationCode] = args as [string, string, string, string];
 			if (Array.from(this.users.values()).some((user) => user.email === email)) {
 				throw new Error('Duplicate user');
 			}
@@ -229,6 +232,8 @@ class FakeD1Database {
 				currentPeriodBytesUsed: 0,
 				subscriptionPlan: 'free',
 				subscriptionEndDate: null,
+				emailVerified: 0,
+				verificationCode: verificationCode ?? null,
 			});
 			return { success: true };
 		}
@@ -328,6 +333,23 @@ class FakeD1Database {
 			return { success: true };
 		}
 
+		if (sql.includes('UPDATE Users SET emailVerified = 1')) {
+			const userId = String(args[0]);
+			const user = this.users.get(userId);
+			if (!user) throw new Error('User not found');
+			user.emailVerified = 1;
+			user.verificationCode = null;
+			return { success: true };
+		}
+
+		if (sql.includes('UPDATE Users SET verificationCode = ? WHERE id = ?')) {
+			const [code, userId] = args as [string, string];
+			const user = this.users.get(userId);
+			if (!user) throw new Error('User not found');
+			user.verificationCode = code;
+			return { success: true };
+		}
+
 		throw new Error(`Unhandled run() SQL: ${sql}`);
 	}
 
@@ -403,6 +425,7 @@ const createEnv = () => {
 		USAGE_REPORT_SECRET: 'test-usage-secret',
 		CF_ACCESS_TEAM_DOMAIN: 'https://example.cloudflareaccess.com',
 		CF_ACCESS_AUD: 'access-audience',
+		RESEND_API_KEY: 'test-resend-api-key',
 	} satisfies TestEnv;
 };
 
@@ -424,8 +447,20 @@ describe('management worker API', () => {
 			testEnv as never,
 			createExecutionContext(),
 		);
-		const signupData = await signupRes.json() as { userId: string };
-		const userId = signupData.userId;
+		const signupData = await signupRes.json() as { requiresVerification?: boolean };
+		expect(signupData.requiresVerification).toBe(true);
+
+		// Find the user in the DB and manually verify their email
+		let userId = '';
+		for (const [id, user] of testEnv.DB.users.entries()) {
+			if (user.email === email.trim().toLowerCase()) {
+				userId = id;
+				user.emailVerified = 1;
+				user.verificationCode = null;
+				break;
+			}
+		}
+		expect(userId).toBeTruthy();
 
 		const loginRes = await worker.fetch(
 			new Request('http://example.com/api/login', {
@@ -482,6 +517,7 @@ describe('management worker API', () => {
 			currentPeriodBytesUsed: 0,
 			subscriptionPlan: 'free',
 			subscriptionEndDate: null,
+			emailVerified: 1,
 		});
 
 		const response = await worker.fetch(
@@ -518,6 +554,7 @@ describe('management worker API', () => {
 			currentPeriodBytesUsed: 0,
 			subscriptionPlan: 'free',
 			subscriptionEndDate: null,
+			emailVerified: 1,
 		});
 
 		const response = await worker.fetch(
@@ -547,6 +584,11 @@ describe('management worker API', () => {
 			env as never,
 			createExecutionContext(),
 		);
+
+		// Manually verify email so login succeeds
+		for (const user of env.DB.users.values()) {
+			if (user.email === 'exp@example.com') { user.emailVerified = 1; break; }
+		}
 
 		const response = await worker.fetch(
 			new Request('http://example.com/api/login', {
@@ -591,6 +633,7 @@ describe('management worker API', () => {
 			currentPeriodBytesUsed: 0,
 			subscriptionPlan: 'basic',
 			subscriptionEndDate: null,
+			emailVerified: 1,
 		});
 		env.DB.allocations.push({
 			id: 'alloc-1',
@@ -651,6 +694,7 @@ describe('management worker API', () => {
 			currentPeriodBytesUsed: 0,
 			subscriptionPlan: 'free',
 			subscriptionEndDate: null,
+			emailVerified: 1,
 		});
 		env.DB.users.set('user-b', {
 			id: 'user-b',
@@ -665,6 +709,7 @@ describe('management worker API', () => {
 			currentPeriodBytesUsed: 0,
 			subscriptionPlan: 'free',
 			subscriptionEndDate: null,
+			emailVerified: 1,
 		});
 		env.DB.allocations.push({
 			id: 'alloc-user-a',
@@ -721,6 +766,7 @@ describe('management worker API', () => {
 			currentPeriodBytesUsed: 0,
 			subscriptionPlan: 'free',
 			subscriptionEndDate: null,
+			emailVerified: 1,
 		});
 
 		const usageResponse = await worker.fetch(
@@ -793,6 +839,11 @@ describe('management worker API', () => {
 		expect(storedUser).toBeDefined();
 		expect(storedUser!.passwordHash).toMatch(/^pbkdf2:/);
 		expect(storedUser!.passwordHash).not.toBe('strong-pass');
+
+		// Manually verify email so login works
+		for (const user of env.DB.users.values()) {
+			if (user.email === 'pbkdf2@example.com') { user.emailVerified = 1; break; }
+		}
 
 		// Verify login works with the PBKDF2 hash
 		const loginResponse = await worker.fetch(
@@ -943,5 +994,97 @@ describe('management worker API', () => {
 		expect(response.status).toBe(200);
 		expect(body.user.tier).toBe('free');
 		expect(body.user.subscriptionPlan).toBe('free');
+	});
+
+	it('signup returns requiresVerification and stores a verification code', async () => {
+		const response = await worker.fetch(
+			new Request('http://example.com/api/signup', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'verify-test@example.com', password: 'strong-pass' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(response.status).toBe(200);
+		const data = await response.json() as { requiresVerification: boolean };
+		expect(data.requiresVerification).toBe(true);
+
+		const user = Array.from(env.DB.users.values()).find((u) => u.email === 'verify-test@example.com');
+		expect(user).toBeDefined();
+		expect(user!.emailVerified).toBe(0);
+		expect(user!.verificationCode).toMatch(/^\d{6}$/);
+	});
+
+	it('blocks login for unverified users', async () => {
+		await worker.fetch(
+			new Request('http://example.com/api/signup', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'unverified@example.com', password: 'strong-pass' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		const response = await worker.fetch(
+			new Request('http://example.com/api/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'unverified@example.com', password: 'strong-pass' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(response.status).toBe(403);
+		const data = await response.json() as { requiresVerification: boolean; error: string };
+		expect(data.requiresVerification).toBe(true);
+		expect(data.error).toContain('verify');
+	});
+
+	it('verifies email via POST /api/verify-email', async () => {
+		await worker.fetch(
+			new Request('http://example.com/api/signup', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'code-test@example.com', password: 'strong-pass' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		const user = Array.from(env.DB.users.values()).find((u) => u.email === 'code-test@example.com')!;
+		const code = user.verificationCode;
+
+		const verifyResponse = await worker.fetch(
+			new Request('http://example.com/api/verify-email', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'code-test@example.com', code }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(verifyResponse.status).toBe(200);
+		expect(user.emailVerified).toBe(1);
+		expect(user.verificationCode).toBeNull();
+
+		// Login should now succeed
+		const loginResponse = await worker.fetch(
+			new Request('http://example.com/api/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: 'code-test@example.com', password: 'strong-pass' }),
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+
+		expect(loginResponse.status).toBe(200);
+		const loginData = await loginResponse.json() as { accessToken: string };
+		expect(loginData.accessToken).toBeTruthy();
 	});
 });

@@ -6,15 +6,19 @@ import PaymentHistory from './pages/PaymentHistory';
 import DeleteAccount from './pages/DeleteAccount';
 import ChangeEmail from './pages/ChangeEmail';
 import ChangePassword from './pages/ChangePassword';
+import VerifyEmail from './pages/VerifyEmail';
+import LanguageSwitcher from './components/LanguageSwitcher';
 
 function App() {
   return (
     <Router>
       <div className="min-h-screen bg-[#0a0a0a] text-slate-200 font-sans selection:bg-blue-500/30">
+        <LanguageSwitcher />
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login mode="login" />} />
           <Route path="/register" element={<Login mode="register" />} />
+          <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/history" element={<PaymentHistory />} />
           <Route path="/delete-account" element={<DeleteAccount />} />

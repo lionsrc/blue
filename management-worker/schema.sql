@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS Users (
     lastConnectTime DATETIME,
     lastConnectIp TEXT,
     lastClientSoftware TEXT,
+    emailVerified BOOLEAN DEFAULT 0,
+    verificationCode TEXT,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

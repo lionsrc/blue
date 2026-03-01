@@ -197,6 +197,20 @@ const resources = {
                 "button": "Update Password",
                 "success": "Password updated successfully!",
                 "errorMatch": "New passwords do not match."
+            },
+            "verify": {
+                "title": "Verify Your Email",
+                "subtitle": "We sent a 6-digit code to",
+                "codeLabel": "Verification Code",
+                "verifyButton": "Verify Email",
+                "verifying": "Verifying...",
+                "resendCode": "Resend verification code",
+                "sending": "Sending...",
+                "success": "Email verified! Redirecting to login...",
+                "failed": "Verification failed. Please try again.",
+                "codeSent": "New verification code sent!",
+                "resendFailed": "Failed to resend code. Please try again.",
+                "backToLogin": "Back to Login"
             }
         }
     },
@@ -391,6 +405,20 @@ const resources = {
                 "button": "更新密码",
                 "success": "密码更新成功！",
                 "errorMatch": "新密码不匹配。"
+            },
+            "verify": {
+                "title": "验证您的邮箱",
+                "subtitle": "我们已向以下邮箱发送了 6 位验证码",
+                "codeLabel": "验证码",
+                "verifyButton": "验证邮箱",
+                "verifying": "验证中...",
+                "resendCode": "重新发送验证码",
+                "sending": "发送中...",
+                "success": "邮箱验证成功！正在跳转到登录页...",
+                "failed": "验证失败，请重试。",
+                "codeSent": "新验证码已发送！",
+                "resendFailed": "发送失败，请重试。",
+                "backToLogin": "返回登录"
             }
         }
     }

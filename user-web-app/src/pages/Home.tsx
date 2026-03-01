@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { FiActivity, FiArrowRight, FiGlobe, FiLayers, FiShield, FiZap } from 'react-icons/fi';
 import { useTranslation } from 'react-i18next';
+import ClientsSection from '../components/ClientsSection';
 
 const featureIcons = [FiZap, FiGlobe, FiShield, FiLayers];
 
@@ -30,8 +31,8 @@ export default function Home() {
             <header className="relative z-10 border-b border-white/5">
                 <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5 md:px-8">
                     <div className="flex items-center gap-3">
-                        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-500 text-lg font-black text-slate-950 shadow-lg shadow-emerald-500/20">
-                            BL
+                        <div className="flex items-center justify-center p-1 rounded-2xl bg-white/5 backdrop-blur-sm border border-white/10 shadow-lg shadow-emerald-500/20">
+                            <img src="/assets/logo.png" alt="Blue Lotus Network Logo" className="h-10 w-10 object-contain rounded-xl" />
                         </div>
                         <div>
                             <p className="text-xs font-semibold uppercase tracking-[0.32em] text-emerald-300/80">{t('landing.brandBadge')}</p>
@@ -160,6 +161,8 @@ export default function Home() {
                         </div>
                     </div>
                 </section>
+
+                <ClientsSection variant="landing" />
             </main>
         </div>
     );

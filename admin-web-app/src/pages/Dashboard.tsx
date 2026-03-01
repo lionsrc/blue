@@ -185,12 +185,12 @@ export default function Dashboard() {
             {/* Top Navigation */}
             <nav className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between sticky top-0 z-10">
                 <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 bg-blue-600/20 rounded-lg flex items-center justify-center text-blue-500">
-                        <Activity size={24} />
+                    <div className="w-10 h-10 bg-blue-600/20 rounded-xl flex items-center justify-center text-blue-500 shadow-lg shadow-blue-500/20 p-1">
+                        <img src="/assets/logo.png" alt="Blue Lotus Network Logo" className="w-full h-full object-contain rounded-lg" />
                     </div>
                     <div>
                         <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-cyan-400">
-                            SuperProxy
+                            Blue Lotus Network
                         </h1>
                         <p className="text-xs text-gray-400">Management Console</p>
                     </div>

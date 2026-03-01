@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Bindings } from '../types.js';
 import {
     jwt, authenticateToken, authRateLimiter, paymentRateLimiter,
-    requireSecret, hashPassword, verifyPassword, signProxySessionToken,
+    requireSecret, getOptionalBinding, hashPassword, verifyPassword, signProxySessionToken,
     encodeBase64, LEGACY_HASH_SCHEME_PREFIX, JWT_EXPIRY_SECONDS,
 } from '../auth.js';
 import {
@@ -27,7 +27,7 @@ user.get('/api/plans', async (c) => {
 });
 
 user.post('/api/signup', authRateLimiter, async (c: any) => {
-    const { email, password } = await c.req.json();
+    const { email, password, lang } = await c.req.json();
     if (!email || !password) return c.json({ error: "Email and password required" }, 400);
 
     const trimmedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
@@ -41,24 +41,52 @@ user.post('/api/signup', authRateLimiter, async (c: any) => {
 
     const passwordHash = await hashPassword(password);
     const userId = uuidv4();
+    const verificationCode = String(Math.floor(100000 + Math.random() * 900000));
 
     try {
         await c.env.DB.prepare(
-            `INSERT INTO Users (id, email, passwordHash) VALUES (?, ?, ?)`
-        ).bind(userId, trimmedEmail, passwordHash).run();
-
-        return c.json({ message: "User created successfully", userId });
+            `INSERT INTO Users (id, email, passwordHash, emailVerified, verificationCode) VALUES (?, ?, ?, 0, ?)`
+        ).bind(userId, trimmedEmail, passwordHash, verificationCode).run();
     } catch (error) {
         return c.json({ error: "User already exists or database error" }, 500);
     }
+
+    // Send verification email via Resend
+    const isZh = lang === 'zh';
+    try {
+        const resendApiKey = requireSecret(c, 'RESEND_API_KEY');
+        const fromEmail = getOptionalBinding(c, 'RESEND_FROM_EMAIL') || 'onboarding@resend.dev';
+
+        await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${resendApiKey}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                from: fromEmail,
+                to: [trimmedEmail],
+                subject: isZh ? '验证您的邮箱 — Blue Lotus Network' : 'Verify your email — Blue Lotus Network',
+                html: isZh
+                    ? `<h2>欢迎使用 Blue Lotus Network！</h2><p>您的验证码为：</p><h1 style="letter-spacing: 6px; font-size: 36px; text-align: center; padding: 20px; background: #f0f0f0; border-radius: 8px;">${verificationCode}</h1><p>请在验证页面输入此验证码以激活您的账户。</p>`
+                    : `<h2>Welcome to Blue Lotus Network!</h2><p>Your verification code is:</p><h1 style="letter-spacing: 6px; font-size: 36px; text-align: center; padding: 20px; background: #f0f0f0; border-radius: 8px;">${verificationCode}</h1><p>Enter this code on the verification page to activate your account.</p>`,
+            }),
+        });
+    } catch (err) {
+        console.error('Failed to send verification email:', err);
+        // Account is created but email may fail — user can request resend
+    }
+
+    return c.json({ message: "User created. Please verify your email.", requiresVerification: true });
 });
 
 user.post('/api/login', authRateLimiter, async (c: any) => {
     const { email, password } = await c.req.json();
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
     const dbUser = await c.env.DB.prepare(
-        `SELECT id, email, passwordHash, tier, subscriptionPlan, isActive FROM Users WHERE email = ?`
-    ).bind(email).first();
+        `SELECT id, email, passwordHash, tier, subscriptionPlan, isActive, emailVerified FROM Users WHERE email = ?`
+    ).bind(normalizedEmail).first();
 
     if (!dbUser) {
         return c.json({ error: "Invalid credentials" }, 401);
@@ -66,6 +94,10 @@ user.post('/api/login', authRateLimiter, async (c: any) => {
 
     if (!dbUser.isActive) {
         return c.json({ error: "Account is blocked" }, 403);
+    }
+
+    if (!dbUser.emailVerified) {
+        return c.json({ error: "Please verify your email before logging in", requiresVerification: true }, 403);
     }
 
     const passwordValid = await verifyPassword(password, dbUser.passwordHash);
@@ -92,6 +124,91 @@ user.post('/api/login', authRateLimiter, async (c: any) => {
         throw err;
     }
     return c.json({ accessToken });
+});
+
+// --- Email Verification ---
+
+user.post('/api/verify-email', authRateLimiter, async (c: any) => {
+    const { email, code } = await c.req.json();
+
+    if (!email || !code) {
+        return c.json({ error: 'Email and verification code required' }, 400);
+    }
+
+    const dbUser = await c.env.DB.prepare(
+        `SELECT id, verificationCode, emailVerified FROM Users WHERE email = ?`
+    ).bind(email.trim().toLowerCase()).first();
+
+    if (!dbUser) {
+        return c.json({ error: 'User not found' }, 404);
+    }
+
+    if (dbUser.emailVerified) {
+        return c.json({ message: 'Email already verified' });
+    }
+
+    if (dbUser.verificationCode !== String(code).trim()) {
+        return c.json({ error: 'Invalid verification code' }, 400);
+    }
+
+    await c.env.DB.prepare(
+        `UPDATE Users SET emailVerified = 1, verificationCode = NULL WHERE id = ?`
+    ).bind(dbUser.id).run();
+
+    return c.json({ message: 'Email verified successfully. You can now log in.' });
+});
+
+user.post('/api/resend-verification', authRateLimiter, async (c: any) => {
+    const { email, lang } = await c.req.json();
+
+    if (!email) {
+        return c.json({ error: 'Email required' }, 400);
+    }
+
+    const dbUser = await c.env.DB.prepare(
+        `SELECT id, emailVerified FROM Users WHERE email = ?`
+    ).bind(email.trim().toLowerCase()).first();
+
+    if (!dbUser) {
+        return c.json({ error: 'User not found' }, 404);
+    }
+
+    if (dbUser.emailVerified) {
+        return c.json({ message: 'Email already verified' });
+    }
+
+    const verificationCode = String(Math.floor(100000 + Math.random() * 900000));
+
+    await c.env.DB.prepare(
+        `UPDATE Users SET verificationCode = ? WHERE id = ?`
+    ).bind(verificationCode, dbUser.id).run();
+
+    const isZh = lang === 'zh';
+    try {
+        const resendApiKey = requireSecret(c, 'RESEND_API_KEY');
+        const fromEmail = getOptionalBinding(c, 'RESEND_FROM_EMAIL') || 'onboarding@resend.dev';
+
+        await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${resendApiKey}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                from: fromEmail,
+                to: [email.trim().toLowerCase()],
+                subject: isZh ? '验证您的邮箱 — Blue Lotus Network' : 'Verify your email — Blue Lotus Network',
+                html: isZh
+                    ? `<h2>您的新验证码</h2><h1 style="letter-spacing: 6px; font-size: 36px; text-align: center; padding: 20px; background: #f0f0f0; border-radius: 8px;">${verificationCode}</h1><p>请在验证页面输入此验证码以激活您的账户。</p>`
+                    : `<h2>Your new verification code</h2><h1 style="letter-spacing: 6px; font-size: 36px; text-align: center; padding: 20px; background: #f0f0f0; border-radius: 8px;">${verificationCode}</h1><p>Enter this code on the verification page to activate your account.</p>`,
+            }),
+        });
+    } catch (err) {
+        console.error('Failed to resend verification email:', err);
+        return c.json({ error: 'Failed to send verification email' }, 500);
+    }
+
+    return c.json({ message: 'Verification code sent' });
 });
 
 user.get('/api/me', authenticateToken, async (c: any) => {

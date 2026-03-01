@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { FiCopy, FiCheckCircle, FiTrendingUp, FiLogOut, FiCreditCard, FiActivity, FiGlobe, FiChevronDown, FiMail, FiLock, FiClock, FiTrash2 } from 'react-icons/fi';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import ClientsSection from '../components/ClientsSection';
 
 type PlanId = 'free' | 'basic' | 'pro';
 
@@ -344,8 +345,8 @@ export default function Dashboard() {
 
             <nav className="relative z-50 border-b border-white/10 bg-white/5 backdrop-blur-md px-8 py-5 flex justify-between items-center transition-all duration-300">
                 <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white font-black text-lg shadow-lg shadow-blue-500/30">
-                        BL
+                    <div className="p-1 rounded-[14px] bg-white/5 border border-white/10 shadow-lg shadow-blue-500/30">
+                        <img src="/assets/logo.png" alt="Blue Lotus Network Logo" className="h-8 w-8 object-contain rounded-lg" />
                     </div>
                     <span className="font-extrabold text-2xl tracking-tight text-white bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">Blue Lotus Network</span>
                 </div>
@@ -587,6 +588,8 @@ export default function Dashboard() {
                         </div>
                     </div>
                 </div>
+
+                <ClientsSection variant="dashboard" />
             </main>
         </div>
     );

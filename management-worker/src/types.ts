@@ -6,8 +6,10 @@ export type Bindings = {
     USAGE_REPORT_SECRET: string;
     CF_ACCESS_TEAM_DOMAIN: string;
     CF_ACCESS_AUD: string;
+    RESEND_API_KEY: string;
     ADMIN_ALLOW_EMAILS?: string;
     CORS_ALLOW_ORIGINS?: string;
+    RESEND_FROM_EMAIL?: string;
 };
 
 export type RequiredSecretBinding =
@@ -16,11 +18,13 @@ export type RequiredSecretBinding =
     | 'SESSION_TOKEN_SECRET'
     | 'USAGE_REPORT_SECRET'
     | 'CF_ACCESS_TEAM_DOMAIN'
-    | 'CF_ACCESS_AUD';
+    | 'CF_ACCESS_AUD'
+    | 'RESEND_API_KEY';
 
 export type OptionalBinding =
     | 'ADMIN_ALLOW_EMAILS'
-    | 'CORS_ALLOW_ORIGINS';
+    | 'CORS_ALLOW_ORIGINS'
+    | 'RESEND_FROM_EMAIL';
 
 export type AccessJwtPayload = {
     aud?: string | string[];
