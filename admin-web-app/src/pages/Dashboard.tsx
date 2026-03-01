@@ -4,7 +4,7 @@ import { LogOut, Users, Server, Activity, ShieldBan, MonitorPlay, Plus, Eye, X, 
 import clsx from 'clsx';
 import { useDebounce } from 'use-debounce';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8787';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8788';
 const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL || '';
 
 interface AdminUser {
@@ -68,6 +68,7 @@ export default function Dashboard() {
     const [newNodeName, setNewNodeName] = useState('');
     const [newNodeIp, setNewNodeIp] = useState('');
     const [isAddingNode, setIsAddingNode] = useState(false);
+    const [addNodeError, setAddNodeError] = useState<string | null>(null);
 
     // --- User Details Modal State ---
     const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
@@ -139,7 +140,7 @@ export default function Dashboard() {
             await fetch(`${API_URL}/api/admin/users/${userId}/block`, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'text/plain'
+                    'Content-Type': 'application/json'
                 },
                 credentials: 'include',
                 body: JSON.stringify({ block: currentlyActive }) // if currently active, send block: true
@@ -177,6 +178,7 @@ export default function Dashboard() {
     const handleAddNode = async (e: React.FormEvent) => {
         e.preventDefault();
         setIsAddingNode(true);
+        setAddNodeError(null);
         try {
             const res = await fetch(`${API_URL}/api/admin/nodes`, {
                 method: 'POST',
@@ -199,10 +201,10 @@ export default function Dashboard() {
                 fetchData();
             } else {
                 const error = await res.json();
-                alert(error.error || "Failed to add node");
+                setAddNodeError(error.error || "Failed to add node");
             }
         } catch (err) {
-            alert("Network err registering node");
+            setAddNodeError("Network error registering node");
         } finally {
             setIsAddingNode(false);
         }
@@ -322,12 +324,7 @@ export default function Dashboard() {
 
                         {/* Content Table Container */}
                         <div className="bg-gray-800 border border-gray-700 rounded-xl overflow-hidden shadow-sm">
-                            {isLoading ? (
-                                <div className="flex flex-col items-center justify-center py-20 text-gray-400">
-                                    <Activity size={32} className="animate-spin mb-4 text-blue-500" />
-                                    <p>Loading {activeTab} data...</p>
-                                </div>
-                            ) : activeTab === 'users' ? (
+                            {activeTab === 'users' ? (
                                 // --- USERS TABLE ---
                                 <div className="space-y-4 p-4">
                                     {/* Filters Bar */}
@@ -362,7 +359,13 @@ export default function Dashboard() {
                                     </div>
 
                                     {/* Data Table */}
-                                    <div className="overflow-x-auto rounded-lg border border-gray-700 bg-gray-800">
+                                    <div className="relative overflow-x-auto rounded-lg border border-gray-700 bg-gray-800 min-h-[400px]">
+                                        {isLoading && (
+                                            <div className="absolute inset-0 bg-gray-900/50 backdrop-blur-[2px] z-10 flex flex-col items-center justify-center text-gray-400 rounded-lg">
+                                                <Activity size={32} className="animate-spin mb-4 text-blue-500" />
+                                                <p>Loading users...</p>
+                                            </div>
+                                        )}
                                         <table className="w-full text-left text-sm text-gray-300">
                                             <thead className="bg-gray-900/50 text-xs uppercase text-gray-400 border-b border-gray-700">
                                                 <tr>
@@ -374,7 +377,7 @@ export default function Dashboard() {
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-gray-700/50">
-                                                {users.length === 0 ? (
+                                                {users.length === 0 && !isLoading ? (
                                                     <tr><td colSpan={5} className="text-center py-8 text-gray-500">No users found</td></tr>
                                                 ) : users.map(user => (
                                                     <tr key={user.id} className="hover:bg-gray-700/20 transition-colors group">
@@ -466,7 +469,13 @@ export default function Dashboard() {
                                 </div>
                             ) : activeTab === 'nodes' ? (
                                 // --- NODES TABLE ---
-                                <div className="overflow-x-auto">
+                                <div className="relative overflow-x-auto min-h-[400px]">
+                                    {isLoading && (
+                                        <div className="absolute inset-0 bg-gray-900/50 backdrop-blur-[2px] z-10 flex flex-col items-center justify-center text-gray-400">
+                                            <Activity size={32} className="animate-spin mb-4 text-blue-500" />
+                                            <p>Loading nodes...</p>
+                                        </div>
+                                    )}
                                     <table className="w-full text-left text-sm text-gray-300">
                                         <thead className="bg-gray-900/50 text-xs uppercase text-gray-400 border-b border-gray-700">
                                             <tr>
@@ -477,7 +486,7 @@ export default function Dashboard() {
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-gray-700/50">
-                                            {nodes.length === 0 ? (
+                                            {nodes.length === 0 && !isLoading ? (
                                                 <tr><td colSpan={5} className="text-center py-8 text-gray-500">No nodes found</td></tr>
                                             ) : nodes.map(node => (
                                                 <tr key={node.id} className="hover:bg-gray-700/20 transition-colors">
@@ -574,6 +583,12 @@ export default function Dashboard() {
                         <p className="text-gray-400 text-sm mb-6">
                             Adds a new VPS server to the pool. You must still run the <code className="text-blue-400">setup_proxy_node.sh</code> script on the target machine.
                         </p>
+
+                        {addNodeError && (
+                            <div className="mb-4 bg-red-500/10 border border-red-500/50 text-red-500 px-4 py-3 rounded-lg text-sm">
+                                {addNodeError}
+                            </div>
+                        )}
 
                         <form onSubmit={handleAddNode} className="space-y-4">
                             <div>

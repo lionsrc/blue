@@ -210,12 +210,26 @@ class FakeD1Database {
 			return { passwordHash: user.passwordHash } as T;
 		}
 
+		if (sql.includes('SELECT COUNT(*) as total FROM Users u')) {
+			let results = Array.from(this.users.values());
+			if (sql.includes('u.email LIKE ?')) {
+				const searchTerm = String(args[0]).replace(/%/g, '');
+				results = results.filter((u) => u.email.includes(searchTerm));
+			}
+			if (sql.includes('u.tier = ?')) {
+				const tierArgIdx = sql.includes('u.email LIKE ?') ? 1 : 0;
+				const tierSearch = String(args[tierArgIdx]);
+				results = results.filter((u) => u.tier === tierSearch);
+			}
+			return { total: results.length } as T;
+		}
+
 		throw new Error(`Unhandled first() SQL: ${sql}`);
 	}
 
 	async run(sql: string, args: unknown[]) {
 		if (sql.includes('INSERT INTO Users')) {
-			const [id, email, passwordHash, verificationCode] = args as [string, string, string, string];
+			const [id, email, passwordHash, initialEmailVerified, verificationCode] = args as [string, string, string, number, string];
 			if (Array.from(this.users.values()).some((user) => user.email === email)) {
 				throw new Error('Duplicate user');
 			}
@@ -232,7 +246,7 @@ class FakeD1Database {
 				currentPeriodBytesUsed: 0,
 				subscriptionPlan: 'free',
 				subscriptionEndDate: null,
-				emailVerified: 0,
+				emailVerified: initialEmailVerified ?? 0,
 				verificationCode: verificationCode ?? null,
 			});
 			return { success: true };
@@ -405,6 +419,26 @@ class FakeD1Database {
 					.filter((p) => p.userId === userId)
 					.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
 			} as { results: T[] };
+		}
+
+		if (sql.includes('SELECT u.id, u.email, u.tier, u.subscriptionPlan, u.bandwidthLimitMbps')) {
+			const limit = Number(args[args.length - 2]);
+			const offset = Number(args[args.length - 1]);
+			let results = Array.from(this.users.values());
+
+			if (sql.includes('u.email LIKE ?')) {
+				const searchTerm = String(args[0]).replace(/%/g, '');
+				results = results.filter((u) => u.email.includes(searchTerm));
+			}
+			if (sql.includes('u.tier = ?')) {
+				const tierArgIdx = sql.includes('u.email LIKE ?') ? 1 : 0;
+				const tierSearch = String(args[tierArgIdx]);
+				results = results.filter((u) => u.tier === tierSearch);
+			}
+
+			results = results.slice(offset, offset + limit);
+
+			return { results: results.map((r) => ({ ...r, createdAt: new Date().toISOString() })) } as { results: T[] };
 		}
 
 		throw new Error(`Unhandled all() SQL: ${sql}`);

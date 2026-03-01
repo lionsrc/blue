@@ -4,7 +4,7 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import { AuthContext, type AuthStatus } from './auth';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8787';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8788';
 
 export default function App() {
   const [adminEmail, setAdminEmail] = useState<string | null>(null);

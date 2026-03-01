@@ -265,6 +265,16 @@ export const authenticateToken = async (c: any, next: any) => {
 // --- Admin Middleware ---
 export const authenticateAdmin = async (c: any, next: any) => {
     try {
+        // Local Dev Bypass
+        if (c.env.ENVIRONMENT === 'development' || !c.env.CF_ACCESS_AUD) {
+            c.set('admin', {
+                email: 'dev-admin@localhost',
+                subject: 'dev-subject-mock',
+            });
+            await next();
+            return;
+        }
+
         const accessEmail = c.req.header('CF-Access-Authenticated-User-Email')?.trim();
         const accessJwt = c.req.header('CF-Access-Jwt-Assertion');
         if (!accessEmail || !accessJwt) {

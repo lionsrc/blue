@@ -45,41 +45,48 @@ user.post('/api/signup', authRateLimiter, async (c: any) => {
     const expiry = Date.now() + 15 * 60 * 1000;
     const verificationPayload = `${verificationCode}:${expiry}`;
 
+    const isLocalDev = c.env.ENVIRONMENT === 'development';
+    const initialEmailVerified = isLocalDev ? 1 : 0;
+
     try {
         await c.env.DB.prepare(
-            `INSERT INTO Users (id, email, passwordHash, emailVerified, verificationCode) VALUES (?, ?, ?, 0, ?)`
-        ).bind(userId, trimmedEmail, passwordHash, verificationPayload).run();
+            `INSERT INTO Users (id, email, passwordHash, emailVerified, verificationCode) VALUES (?, ?, ?, ?, ?)`
+        ).bind(userId, trimmedEmail, passwordHash, initialEmailVerified, verificationPayload).run();
     } catch (error) {
+        console.error("Signup DB Error:", error);
         return c.json({ error: "User already exists or database error" }, 500);
     }
 
-    // Send verification email via Resend
-    const isZh = lang === 'zh';
-    try {
-        const resendApiKey = requireSecret(c, 'RESEND_API_KEY');
-        const fromEmail = getOptionalBinding(c, 'RESEND_FROM_EMAIL') || 'onboarding@resend.dev';
+    if (!isLocalDev) {
+        // Send verification email via Resend
+        const isZh = lang === 'zh';
+        try {
+            const resendApiKey = requireSecret(c, 'RESEND_API_KEY');
+            const fromEmail = getOptionalBinding(c, 'RESEND_FROM_EMAIL') || 'onboarding@resend.dev';
 
-        await fetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${resendApiKey}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                from: fromEmail,
-                to: [trimmedEmail],
-                subject: isZh ? '验证您的邮箱 — Blue Lotus Network' : 'Verify your email — Blue Lotus Network',
-                html: isZh
-                    ? `<h2>欢迎使用 Blue Lotus Network！</h2><p>您的验证码为：</p><h1 style="letter-spacing: 6px; font-size: 36px; text-align: center; padding: 20px; background: #f0f0f0; border-radius: 8px;">${verificationCode}</h1><p>请在验证页面输入此验证码以激活您的账户。</p>`
-                    : `<h2>Welcome to Blue Lotus Network!</h2><p>Your verification code is:</p><h1 style="letter-spacing: 6px; font-size: 36px; text-align: center; padding: 20px; background: #f0f0f0; border-radius: 8px;">${verificationCode}</h1><p>Enter this code on the verification page to activate your account.</p>`,
-            }),
-        });
-    } catch (err) {
-        console.error('Failed to send verification email:', err);
-        // Account is created but email may fail — user can request resend
+            await fetch('https://api.resend.com/emails', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${resendApiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    from: fromEmail,
+                    to: [trimmedEmail],
+                    subject: isZh ? '验证您的邮箱 — Blue Lotus Network' : 'Verify your email — Blue Lotus Network',
+                    html: isZh
+                        ? `<h2>欢迎使用 Blue Lotus Network！</h2><p>您的验证码为：</p><h1 style="letter-spacing: 6px; font-size: 36px; text-align: center; padding: 20px; background: #f0f0f0; border-radius: 8px;">${verificationCode}</h1><p>请在验证页面输入此验证码以激活您的账户。</p>`
+                        : `<h2>Welcome to Blue Lotus Network!</h2><p>Your verification code is:</p><h1 style="letter-spacing: 6px; font-size: 36px; text-align: center; padding: 20px; background: #f0f0f0; border-radius: 8px;">${verificationCode}</h1><p>Enter this code on the verification page to activate your account.</p>`,
+                }),
+            });
+        } catch (err) {
+            console.error('Failed to send verification email:', err);
+            // Account is created but email may fail — user can request resend
+        }
+        return c.json({ message: "User created. Please verify your email.", requiresVerification: true });
     }
 
-    return c.json({ message: "User created. Please verify your email.", requiresVerification: true });
+    return c.json({ message: "User created (dev mode auto-verified).", requiresVerification: false });
 });
 
 user.post('/api/login', authRateLimiter, async (c: any) => {
@@ -98,7 +105,8 @@ user.post('/api/login', authRateLimiter, async (c: any) => {
         return c.json({ error: "Account is blocked" }, 403);
     }
 
-    if (!dbUser.emailVerified) {
+    const isLocalDev = c.env.ENVIRONMENT === 'development';
+    if (!dbUser.emailVerified && !isLocalDev) {
         return c.json({ error: "Please verify your email before logging in", requiresVerification: true }, 403);
     }
 

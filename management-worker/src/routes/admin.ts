@@ -101,7 +101,14 @@ admin.get('/api/admin/nodes', authenticateAdmin, async (c: any) => {
 });
 
 admin.post('/api/admin/nodes', authenticateAdmin, async (c: any) => {
-    const { name, publicIp } = await c.req.json();
+    let name, publicIp;
+    try {
+        const body = JSON.parse(await c.req.text());
+        name = body.name;
+        publicIp = body.publicIp;
+    } catch {
+        return c.json({ error: "Invalid JSON payload format" }, 400);
+    }
     if (!name || !publicIp) return c.json({ error: "Name and Public IP required" }, 400);
 
     const nodeId = uuidv4();
