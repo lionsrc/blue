@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../auth';
-import { LogOut, Users, Server, Activity, ShieldBan, MonitorPlay, Plus, Eye, X } from 'lucide-react';
+import { LogOut, Users, Server, Activity, ShieldBan, MonitorPlay, Plus, Eye, X, Search, ChevronLeft, ChevronRight, Filter } from 'lucide-react';
 import clsx from 'clsx';
+import { useDebounce } from 'use-debounce';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL || '';
@@ -54,6 +55,14 @@ export default function Dashboard() {
     const [nodes, setNodes] = useState<AdminNode[]>([]);
     const [isLoading, setIsLoading] = useState(true);
 
+    // --- Pagination & Filtering State ---
+    const [currentPage, setCurrentPage] = useState(1);
+    const [totalPages, setTotalPages] = useState(1);
+    const [totalUsers, setTotalUsers] = useState(0);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [debouncedSearchQuery] = useDebounce(searchQuery, 400);
+    const [tierFilter, setTierFilter] = useState('all');
+
     // --- Add Node Modal State ---
     const [showAddNode, setShowAddNode] = useState(false);
     const [newNodeName, setNewNodeName] = useState('');
@@ -75,7 +84,12 @@ export default function Dashboard() {
 
     useEffect(() => {
         fetchData();
-    }, [activeTab]);
+    }, [activeTab, currentPage, debouncedSearchQuery, tierFilter]);
+
+    // Reset pagination when search or filters change
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [debouncedSearchQuery, tierFilter, activeTab]);
 
     const fetchData = async () => {
         if (activeTab === 'monitoring') {
@@ -85,7 +99,19 @@ export default function Dashboard() {
 
         setIsLoading(true);
         try {
-            const endpoint = activeTab === 'users' ? '/api/admin/users' : '/api/admin/nodes';
+            let endpoint = '';
+            if (activeTab === 'users') {
+                const params = new URLSearchParams({
+                    page: currentPage.toString(),
+                    limit: '20',
+                    search: debouncedSearchQuery,
+                    tier: tierFilter
+                });
+                endpoint = `/api/admin/users?${params.toString()}`;
+            } else {
+                endpoint = '/api/admin/nodes';
+            }
+
             const res = await fetch(`${API_URL}${endpoint}`, {
                 credentials: 'include',
             });
@@ -96,6 +122,8 @@ export default function Dashboard() {
             const data = await res.json();
             if (activeTab === 'users') {
                 setUsers(data.users || []);
+                setTotalPages(data.totalPages || 1);
+                setTotalUsers(data.total || 0);
             } else {
                 setNodes(data.nodes || []);
             }
@@ -301,79 +329,140 @@ export default function Dashboard() {
                                 </div>
                             ) : activeTab === 'users' ? (
                                 // --- USERS TABLE ---
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-left text-sm text-gray-300">
-                                        <thead className="bg-gray-900/50 text-xs uppercase text-gray-400 border-b border-gray-700">
-                                            <tr>
-                                                <th className="px-6 py-4 font-medium">User</th>
-                                                <th className="px-6 py-4 font-medium">Tier / Speeds</th>
-                                                <th className="px-6 py-4 font-medium">Active Node</th>
-                                                <th className="px-6 py-4 font-medium">Status</th>
-                                                <th className="px-6 py-4 font-medium text-right">Actions</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-gray-700/50">
-                                            {users.length === 0 ? (
-                                                <tr><td colSpan={5} className="text-center py-8 text-gray-500">No users found</td></tr>
-                                            ) : users.map(user => (
-                                                <tr key={user.id} className="hover:bg-gray-700/20 transition-colors group">
-                                                    <td className="px-6 py-4">
-                                                        <div className="font-medium text-gray-200">{user.email}</div>
-                                                        <div className="text-xs text-gray-500 mt-0.5">{user.id.split('-')[0]}***</div>
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <div className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                                                            {user.tier.toUpperCase()}
-                                                        </div>
-                                                        <div className="text-xs text-gray-500 mt-1">Limit: {user.bandwidthLimitMbps} Mbps</div>
-                                                    </td>
-                                                    <td className="px-6 py-4 text-gray-400">
-                                                        {user.nodeId ? (
-                                                            <div className="flex items-center space-x-1">
-                                                                <MonitorPlay size={14} className="text-green-500" />
-                                                                <span>Port: {user.port}</span>
-                                                            </div>
-                                                        ) : (
-                                                            <span className="text-gray-600 italic">Not Connected</span>
-                                                        )}
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <span className={clsx("inline-flex items-center space-x-1.5 px-2 py-1 rounded-full text-xs font-medium border",
-                                                            user.isActive
-                                                                ? "bg-green-500/10 text-green-400 border-green-500/20"
-                                                                : "bg-red-500/10 text-red-400 border-red-500/20"
-                                                        )}>
-                                                            <span className={clsx("w-1.5 h-1.5 rounded-full", user.isActive ? "bg-green-400" : "bg-red-400")}></span>
-                                                            <span>{user.isActive ? 'Active' : 'Blocked'}</span>
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-6 py-4 text-right">
-                                                        <div className="flex items-center space-x-2 justify-end">
-                                                            <button
-                                                                onClick={() => handleViewUser(user)}
-                                                                className="px-3 py-1.5 rounded text-xs font-medium border bg-blue-500/10 border-blue-500/20 text-blue-400 hover:bg-blue-500 hover:text-white transition-colors flex items-center space-x-1"
-                                                            >
-                                                                <Eye size={14} />
-                                                                <span>Details</span>
-                                                            </button>
-                                                            <button
-                                                                onClick={() => toggleUserBlock(user.id, !!user.isActive)}
-                                                                className={clsx(
-                                                                    "px-3 py-1.5 rounded text-xs font-medium border transition-colors flex items-center space-x-1",
-                                                                    user.isActive
-                                                                        ? "bg-red-500/10 border-red-500/20 text-red-400 hover:bg-red-500 hover:text-white"
-                                                                        : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-white"
-                                                                )}
-                                                            >
-                                                                <ShieldBan size={14} />
-                                                                <span>{user.isActive ? 'Block' : 'Unblock'}</span>
-                                                            </button>
-                                                        </div>
-                                                    </td>
+                                <div className="space-y-4 p-4">
+                                    {/* Filters Bar */}
+                                    <div className="flex flex-col sm:flex-row gap-4 items-center justify-between">
+                                        <div className="relative w-full sm:max-w-md">
+                                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                                <Search size={16} className="text-gray-500" />
+                                            </div>
+                                            <input
+                                                type="text"
+                                                placeholder="Search by email..."
+                                                value={searchQuery}
+                                                onChange={(e) => setSearchQuery(e.target.value)}
+                                                className="w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-4 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500 transition-shadow"
+                                            />
+                                        </div>
+                                        <div className="relative w-full sm:w-auto min-w-[150px]">
+                                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                                <Filter size={16} className="text-gray-500" />
+                                            </div>
+                                            <select
+                                                value={tierFilter}
+                                                onChange={(e) => setTierFilter(e.target.value)}
+                                                className="w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-8 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500 appearance-none transition-shadow cursor-pointer"
+                                            >
+                                                <option value="all">All Tiers</option>
+                                                <option value="free">Free</option>
+                                                <option value="basic">Basic</option>
+                                                <option value="pro">Pro</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    {/* Data Table */}
+                                    <div className="overflow-x-auto rounded-lg border border-gray-700 bg-gray-800">
+                                        <table className="w-full text-left text-sm text-gray-300">
+                                            <thead className="bg-gray-900/50 text-xs uppercase text-gray-400 border-b border-gray-700">
+                                                <tr>
+                                                    <th className="px-6 py-4 font-medium">User</th>
+                                                    <th className="px-6 py-4 font-medium">Tier / Speeds</th>
+                                                    <th className="px-6 py-4 font-medium">Active Node</th>
+                                                    <th className="px-6 py-4 font-medium">Status</th>
+                                                    <th className="px-6 py-4 font-medium text-right">Actions</th>
                                                 </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-700/50">
+                                                {users.length === 0 ? (
+                                                    <tr><td colSpan={5} className="text-center py-8 text-gray-500">No users found</td></tr>
+                                                ) : users.map(user => (
+                                                    <tr key={user.id} className="hover:bg-gray-700/20 transition-colors group">
+                                                        <td className="px-6 py-4">
+                                                            <div className="font-medium text-gray-200">{user.email}</div>
+                                                            <div className="text-xs text-gray-500 mt-0.5">{user.id.split('-')[0]}***</div>
+                                                        </td>
+                                                        <td className="px-6 py-4">
+                                                            <div className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                                                {user.tier.toUpperCase()}
+                                                            </div>
+                                                            <div className="text-xs text-gray-500 mt-1">Limit: {user.bandwidthLimitMbps} Mbps</div>
+                                                        </td>
+                                                        <td className="px-6 py-4 text-gray-400">
+                                                            {user.nodeId ? (
+                                                                <div className="flex items-center space-x-1">
+                                                                    <MonitorPlay size={14} className="text-green-500" />
+                                                                    <span>Port: {user.port}</span>
+                                                                </div>
+                                                            ) : (
+                                                                <span className="text-gray-600 italic">Not Connected</span>
+                                                            )}
+                                                        </td>
+                                                        <td className="px-6 py-4">
+                                                            <span className={clsx("inline-flex items-center space-x-1.5 px-2 py-1 rounded-full text-xs font-medium border",
+                                                                user.isActive
+                                                                    ? "bg-green-500/10 text-green-400 border-green-500/20"
+                                                                    : "bg-red-500/10 text-red-400 border-red-500/20"
+                                                            )}>
+                                                                <span className={clsx("w-1.5 h-1.5 rounded-full", user.isActive ? "bg-green-400" : "bg-red-400")}></span>
+                                                                <span>{user.isActive ? 'Active' : 'Blocked'}</span>
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-6 py-4 text-right">
+                                                            <div className="flex items-center space-x-2 justify-end">
+                                                                <button
+                                                                    onClick={() => handleViewUser(user)}
+                                                                    className="px-3 py-1.5 rounded text-xs font-medium border bg-blue-500/10 border-blue-500/20 text-blue-400 hover:bg-blue-500 hover:text-white transition-colors flex items-center space-x-1"
+                                                                >
+                                                                    <Eye size={14} />
+                                                                    <span>Details</span>
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => toggleUserBlock(user.id, !!user.isActive)}
+                                                                    className={clsx(
+                                                                        "px-3 py-1.5 rounded text-xs font-medium border transition-colors flex items-center space-x-1",
+                                                                        user.isActive
+                                                                            ? "bg-red-500/10 border-red-500/20 text-red-400 hover:bg-red-500 hover:text-white"
+                                                                            : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-white"
+                                                                    )}
+                                                                >
+                                                                    <ShieldBan size={14} />
+                                                                    <span>{user.isActive ? 'Block' : 'Unblock'}</span>
+                                                                </button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+
+                                    {/* Pagination Controls */}
+                                    <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
+                                        <div className="text-sm text-gray-400">
+                                            Showing <span className="font-medium text-white">{users.length}</span> of{' '}
+                                            <span className="font-medium text-white">{totalUsers}</span> users
+                                        </div>
+                                        <div className="flex items-center space-x-2">
+                                            <button
+                                                disabled={currentPage <= 1}
+                                                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                                className="p-1 rounded-md border border-gray-700 bg-gray-900 text-gray-400 hover:text-white hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                            >
+                                                <ChevronLeft size={18} />
+                                            </button>
+                                            <span className="text-xs text-gray-500 font-medium px-2">
+                                                Page {currentPage} of {Math.max(1, totalPages)}
+                                            </span>
+                                            <button
+                                                disabled={currentPage >= totalPages}
+                                                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                                className="p-1 rounded-md border border-gray-700 bg-gray-900 text-gray-400 hover:text-white hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                            >
+                                                <ChevronRight size={18} />
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
                             ) : activeTab === 'nodes' ? (
                                 // --- NODES TABLE ---

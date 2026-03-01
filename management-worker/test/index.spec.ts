@@ -1085,9 +1085,65 @@ describe('management worker API', () => {
 			env as never,
 			createExecutionContext(),
 		);
-
 		expect(loginResponse.status).toBe(200);
 		const loginData = await loginResponse.json() as { accessToken: string };
 		expect(loginData.accessToken).toBeTruthy();
+	});
+
+	it('admin gets paginated, filtered, and searched users', async () => {
+		const adminToken = await jwt.sign({ admin: true }, env.JWT_SECRET);
+
+		// Seed a few users for testing
+		for (let i = 0; i < 5; i++) {
+			await worker.fetch(
+				new Request('http://example.com/api/signup', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ email: `testuser${i}@example.com`, password: 'strong-pass' }),
+				}),
+				env as never,
+				createExecutionContext(),
+			);
+		}
+
+		// Make one a pro user
+		const proUser = Array.from(env.DB.users.values()).find(u => u.email === 'testuser3@example.com')!;
+		proUser.tier = 'pro';
+
+		// Test pagination limit
+		const resList = await worker.fetch(
+			new Request('http://example.com/api/admin/users?page=1&limit=2', {
+				headers: { Authorization: `Bearer ${adminToken}` },
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+		const dataList = await resList.json() as any;
+		expect(dataList.users.length).toBe(2);
+		expect(dataList.total).toBeGreaterThanOrEqual(5);
+
+		// Test search
+		const resSearch = await worker.fetch(
+			new Request('http://example.com/api/admin/users?search=testuser2', {
+				headers: { Authorization: `Bearer ${adminToken}` },
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+		const dataSearch = await resSearch.json() as any;
+		expect(dataSearch.users.length).toBe(1);
+		expect(dataSearch.users[0].email).toBe('testuser2@example.com');
+
+		// Test tier filter
+		const resTier = await worker.fetch(
+			new Request('http://example.com/api/admin/users?tier=pro', {
+				headers: { Authorization: `Bearer ${adminToken}` },
+			}),
+			env as never,
+			createExecutionContext(),
+		);
+		const dataTier = await resTier.json() as any;
+		expect(dataTier.users.length).toBe(1);
+		expect(dataTier.users[0].tier).toBe('pro');
 	});
 });

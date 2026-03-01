@@ -10,16 +10,53 @@ admin.get('/api/admin/session', authenticateAdmin, async (c: any) => {
 });
 
 admin.get('/api/admin/users', authenticateAdmin, async (c: any) => {
-    const { results: users } = await c.env.DB.prepare(
-        `SELECT u.id, u.email, u.tier, u.subscriptionPlan, u.bandwidthLimitMbps, u.creditBalance, u.isActive, u.createdAt,
-				u.totalBytesUsed, u.lastConnectTime, u.lastConnectIp, u.lastClientSoftware,
-		        a.nodeId, a.port
-		 FROM Users u
-		 LEFT JOIN UserAllocations a ON u.id = a.userId
-		 ORDER BY u.createdAt DESC`
-    ).all();
+    const page = Math.max(1, parseInt(c.req.query('page') || '1', 10));
+    const limit = Math.max(1, Math.min(100, parseInt(c.req.query('limit') || '20', 10)));
+    const search = c.req.query('search') || '';
+    const tier = c.req.query('tier') || 'all';
 
-    return c.json({ users });
+    let baseQuery = `FROM Users u LEFT JOIN UserAllocations a ON u.id = a.userId`;
+    const conditions: string[] = [];
+    const params: any[] = [];
+
+    if (search.trim()) {
+        conditions.push(`u.email LIKE ?`);
+        params.push(`%${search.trim()}%`);
+    }
+
+    if (tier !== 'all') {
+        conditions.push(`u.tier = ?`);
+        params.push(tier);
+    }
+
+    if (conditions.length > 0) {
+        baseQuery += ` WHERE ` + conditions.join(' AND ');
+    }
+
+    const countQuery = `SELECT COUNT(*) as total ${baseQuery}`;
+    const totalResult = await c.env.DB.prepare(countQuery).bind(...params).first();
+    const total = totalResult?.total || 0;
+
+    const offset = (page - 1) * limit;
+
+    const dataQuery = `
+        SELECT u.id, u.email, u.tier, u.subscriptionPlan, u.bandwidthLimitMbps, u.creditBalance, u.isActive, u.createdAt,
+               u.totalBytesUsed, u.lastConnectTime, u.lastConnectIp, u.lastClientSoftware,
+               a.nodeId, a.port
+        ${baseQuery}
+        ORDER BY u.createdAt DESC
+        LIMIT ? OFFSET ?
+    `;
+
+    const { results: users } = await c.env.DB.prepare(dataQuery).bind(...params, limit, offset).all();
+
+    return c.json({
+        users,
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+    });
 });
 
 admin.get('/api/admin/users/:id/payments', authenticateAdmin, async (c: any) => {
