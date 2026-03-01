@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-WORKER_URL=${WORKER_URL:-"https://management-worker.liondad.workers.dev"}
+WORKER_URL=${WORKER_URL:-"https://api.blue2000.cc"}
 AGENT_SECRET=${AGENT_SECRET:?Set AGENT_SECRET before starting node_agent.sh}
 NODE_IP=${NODE_IP:-}
 INTERFACE=${INTERFACE:-"eth0"}

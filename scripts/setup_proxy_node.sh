@@ -6,7 +6,7 @@ set -e
 
 echo "Starting SuperProxy Node Setup..."
 
-WORKER_URL=${WORKER_URL:-"https://management-worker.liondad.workers.dev"}
+WORKER_URL=${WORKER_URL:-"https://api.blue2000.cc"}
 AGENT_SECRET=${AGENT_SECRET:?Set AGENT_SECRET before running setup_proxy_node.sh}
 NODE_IP=${NODE_IP:-}
 
@@ -69,7 +69,7 @@ cat > /usr/local/bin/node_agent.sh << 'EOF'
 
 set -euo pipefail
 
-WORKER_URL=${WORKER_URL:-"https://management-worker.liondad.workers.dev"}
+WORKER_URL=${WORKER_URL:-"https://api.blue2000.cc"}
 AGENT_SECRET=${AGENT_SECRET:?Set AGENT_SECRET in /etc/superproxy/node-agent.env}
 NODE_IP=${NODE_IP:-}
 INTERFACE=${INTERFACE:-"eth0"}
