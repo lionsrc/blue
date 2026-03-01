@@ -2,6 +2,9 @@ name = "blue-management-worker"
 main = "src/index.ts"
 compatibility_date = "2024-04-03"
 
+workers_dev = true 
+preview_urls = true
+
 # Configure these with `wrangler secret put` (or `.dev.vars` for local development):
 # JWT_SECRET
 # AGENT_SECRET
@@ -22,3 +25,11 @@ database_id = "4a92c4fd-d9a6-4933-b05a-fde0de2ef730"
 # Cron triggers for failover monitoring
 # [triggers]
 # crons = [ "*/5 * * * *" ] # Run every 5 minutes
+
+[[routes]]
+pattern = "api.blue2000.cc"
+custom_domain = true
+zone_name = "blue2000.cc"
+
+[vars]
+CORS_ALLOW_ORIGINS="https://admin.blue2000.cc,https://blue2000.cc"
