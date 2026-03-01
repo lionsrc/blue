@@ -24,7 +24,7 @@ export default function VerifyEmail() {
         try {
             const response = await fetch(`${apiUrl}/api/verify-email`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'text/plain' },
                 body: JSON.stringify({ email: emailFromQuery, code }),
             });
 
@@ -50,7 +50,7 @@ export default function VerifyEmail() {
         try {
             const response = await fetch(`${apiUrl}/api/resend-verification`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'text/plain' },
                 body: JSON.stringify({ email: emailFromQuery, lang: i18n.language?.startsWith('zh') ? 'zh' : 'en' }),
             });
 

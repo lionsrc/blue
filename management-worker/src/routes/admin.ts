@@ -72,7 +72,7 @@ admin.get('/api/admin/users/:id/payments', authenticateAdmin, async (c: any) => 
 
 admin.post('/api/admin/users/:id/block', authenticateAdmin, async (c: any) => {
     const userId = c.req.param('id');
-    const { block } = await c.req.json(); // boolean: true to block, false to unblock
+    const { block } = JSON.parse(await c.req.text() || '{}'); // boolean: true to block, false to unblock
 
     const newIsActive = block ? 0 : 1;
 

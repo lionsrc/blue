@@ -32,4 +32,4 @@ custom_domain = true
 zone_name = "blue2000.cc"
 
 [vars]
-CORS_ALLOW_ORIGINS="https://admin.blue2000.cc,https://blue2000.cc"
+CORS_ALLOW_ORIGINS="https://admin.blue2000.cc,https://blue2000.cc,https://www.blue2000.cc,http://127.0.0.1:5173"

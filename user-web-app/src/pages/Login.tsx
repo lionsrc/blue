@@ -26,7 +26,7 @@ export default function Login({ mode = 'login' }: LoginProps) {
             if (isRegistering) {
                 const signupResponse = await fetch(`${apiUrl}/api/signup`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'text/plain' },
                     body: JSON.stringify({ email, password, lang: i18n.language?.startsWith('zh') ? 'zh' : 'en' }),
                 });
 
@@ -43,7 +43,7 @@ export default function Login({ mode = 'login' }: LoginProps) {
 
             const loginResponse = await fetch(`${apiUrl}/api/login`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'text/plain' },
                 body: JSON.stringify({ email, password }),
             });
 

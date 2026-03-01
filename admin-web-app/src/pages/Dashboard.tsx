@@ -140,7 +140,7 @@ export default function Dashboard() {
             await fetch(`${API_URL}/api/admin/users/${userId}/block`, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'text/plain'
                 },
                 credentials: 'include',
                 body: JSON.stringify({ block: currentlyActive }) // if currently active, send block: true
@@ -573,6 +573,40 @@ export default function Dashboard() {
 
                     </div>
                 </main>
+            </div>
+
+            {/* Mobile Bottom Navigation */}
+            <div className="md:hidden border-t border-gray-700 bg-gray-800/90 backdrop-blur-md pb-[env(safe-area-inset-bottom)] flex items-center justify-around sticky bottom-0 z-40">
+                <button
+                    onClick={() => setActiveTab('users')}
+                    className={clsx(
+                        "flex flex-col items-center justify-center pt-3 pb-2 flex-1 transition-colors",
+                        activeTab === 'users' ? "text-blue-400" : "text-gray-400 hover:text-gray-200"
+                    )}
+                >
+                    <Users size={20} />
+                    <span className="text-[10px] mt-1 font-medium tracking-wide">Users</span>
+                </button>
+                <button
+                    onClick={() => setActiveTab('nodes')}
+                    className={clsx(
+                        "flex flex-col items-center justify-center pt-3 pb-2 flex-1 transition-colors",
+                        activeTab === 'nodes' ? "text-blue-400" : "text-gray-400 hover:text-gray-200"
+                    )}
+                >
+                    <Server size={20} />
+                    <span className="text-[10px] mt-1 font-medium tracking-wide">Nodes</span>
+                </button>
+                <button
+                    onClick={() => setActiveTab('monitoring')}
+                    className={clsx(
+                        "flex flex-col items-center justify-center pt-3 pb-2 flex-1 transition-colors",
+                        activeTab === 'monitoring' ? "text-blue-400" : "text-gray-400 hover:text-gray-200"
+                    )}
+                >
+                    <MonitorPlay size={20} />
+                    <span className="text-[10px] mt-1 font-medium tracking-wide">Monitoring</span>
+                </button>
             </div>
 
             {/* Add Node Modal overlay */}

@@ -230,7 +230,7 @@ export const readAgentSyncPayload = async (c: any): Promise<AgentSyncPayload> =>
     }
 
     try {
-        const body = await c.req.json();
+        const body = JSON.parse(await c.req.text() || '{}');
         return {
             cpuLoad: parseNumericValue(body.cpuLoad ?? body.load),
             activeConnections: parseNumericValue(body.activeConnections),

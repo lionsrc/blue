@@ -95,7 +95,7 @@ agent.post('/api/usage/report', async (c: any) => {
 
     let body: { userId?: unknown; bytesUsed?: unknown };
     try {
-        body = await c.req.json();
+        body = JSON.parse(await c.req.text() || '{}');
     } catch {
         return c.json({ error: 'Invalid JSON body' }, 400);
     }

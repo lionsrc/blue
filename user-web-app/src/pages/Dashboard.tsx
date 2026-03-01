@@ -216,7 +216,7 @@ export default function Dashboard() {
             const paymentResponse = await fetch(`${apiUrl}/api/payments/process`, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
+                    'Content-Type': 'text/plain',
                     Authorization: `Bearer ${token}`,
                 },
                 body: JSON.stringify({

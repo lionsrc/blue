@@ -27,7 +27,7 @@ user.get('/api/plans', async (c) => {
 });
 
 user.post('/api/signup', authRateLimiter, async (c: any) => {
-    const { email, password, lang } = await c.req.json();
+    const { email, password, lang } = JSON.parse(await c.req.text() || '{}');
     if (!email || !password) return c.json({ error: "Email and password required" }, 400);
 
     const trimmedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
@@ -90,7 +90,7 @@ user.post('/api/signup', authRateLimiter, async (c: any) => {
 });
 
 user.post('/api/login', authRateLimiter, async (c: any) => {
-    const { email, password } = await c.req.json();
+    const { email, password } = JSON.parse(await c.req.text() || '{}');
     const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
     const dbUser = await c.env.DB.prepare(
@@ -139,7 +139,7 @@ user.post('/api/login', authRateLimiter, async (c: any) => {
 // --- Email Verification ---
 
 user.post('/api/verify-email', authRateLimiter, async (c: any) => {
-    const { email, code } = await c.req.json();
+    const { email, code } = JSON.parse(await c.req.text() || '{}');
 
     if (!email || !code) {
         return c.json({ error: 'Email and verification code required' }, 400);
@@ -180,7 +180,7 @@ user.post('/api/verify-email', authRateLimiter, async (c: any) => {
 });
 
 user.post('/api/resend-verification', authRateLimiter, async (c: any) => {
-    const { email, lang } = await c.req.json();
+    const { email, lang } = JSON.parse(await c.req.text() || '{}');
 
     if (!email) {
         return c.json({ error: 'Email required' }, 400);
@@ -408,7 +408,7 @@ user.get('/api/subscription', authenticateToken, async (c: any) => {
 // --- Payment Processing ---
 user.post('/api/payments/process', paymentRateLimiter, authenticateToken, async (c: any) => {
     const currentUser = c.get('user');
-    const { amount, currency, paymentMethod, packageId } = await c.req.json();
+    const { amount, currency, paymentMethod, packageId } = JSON.parse(await c.req.text() || '{}');
 
     const selectedPackage = getPackageSelection(packageId);
     if (!selectedPackage) {
@@ -462,7 +462,7 @@ user.post('/api/payments/process', paymentRateLimiter, authenticateToken, async 
 
 user.put('/api/change-email', authenticateToken, async (c: any) => {
     const tokenUser = c.get('user');
-    const { newEmail } = await c.req.json();
+    const { newEmail } = JSON.parse(await c.req.text() || '{}');
 
     if (!newEmail || typeof newEmail !== 'string' || !newEmail.includes('@')) {
         return c.json({ error: 'Valid email address required' }, 400);
@@ -513,7 +513,7 @@ user.put('/api/change-email', authenticateToken, async (c: any) => {
 
 user.put('/api/change-password', authenticateToken, async (c: any) => {
     const tokenUser = c.get('user');
-    const { currentPassword, newPassword } = await c.req.json();
+    const { currentPassword, newPassword } = JSON.parse(await c.req.text() || '{}');
 
     if (!currentPassword || !newPassword) {
         return c.json({ error: 'Current password and new password required' }, 400);
