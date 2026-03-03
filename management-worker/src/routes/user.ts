@@ -389,7 +389,7 @@ user.get('/api/subscription', authenticateToken, async (c: any) => {
 
     // 4. Build the VLESS link
     const websocketPath = `/sp-ws?token=${encodeURIComponent(sessionToken)}`;
-    const vlessLink = `vless://${allocation.xrayUuid}@${allocation.domainName}:443?encryption=none&security=tls&type=ws&host=${allocation.domainName}&path=${websocketPath}`;
+    const vlessLink = `vless://${allocation.xrayUuid}@${allocation.domainName}:443?encryption=none&security=tls&sni=${allocation.domainName}&fp=chrome&type=ws&host=${allocation.domainName}&path=${encodeURIComponent(websocketPath)}`;
 
     // Base64 encode the link for standard subscription clients
     const base64Encoded = encodeBase64(vlessLink);
