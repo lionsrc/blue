@@ -59,6 +59,7 @@ type TestEnv = {
 	CF_ACCESS_TEAM_DOMAIN: string;
 	CF_ACCESS_AUD: string;
 	RESEND_API_KEY: string;
+	CORS_ALLOW_ORIGINS?: string;
 };
 
 class FakeD1Statement {
@@ -846,18 +847,48 @@ describe('management worker API', () => {
 		});
 	});
 
-	it('requires Cloudflare Access headers for admin session', async () => {
-		const response = await worker.fetch(
-			new Request('http://example.com/api/admin/session'),
-			env as never,
-			createExecutionContext(),
-		);
+		it('requires Cloudflare Access headers for admin session', async () => {
+			const response = await worker.fetch(
+				new Request('http://example.com/api/admin/session'),
+				env as never,
+				createExecutionContext(),
+			);
 
-		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({
-			error: 'Cloudflare Access authentication required',
+			expect(response.status).toBe(401);
+			expect(await response.json()).toEqual({
+				error: 'Cloudflare Access authentication required',
+			});
 		});
-	});
+
+		it('redirects back to an allowed admin origin after session bootstrap', async () => {
+			env.CF_ACCESS_AUD = '';
+			env.CORS_ALLOW_ORIGINS = 'https://admin.blue2000.cc';
+
+			const response = await worker.fetch(
+				new Request('http://example.com/api/admin/session?returnTo=https%3A%2F%2Fadmin.blue2000.cc%2Fdashboard'),
+				env as never,
+				createExecutionContext(),
+			);
+
+			expect(response.status).toBe(302);
+			expect(response.headers.get('Location')).toBe('https://admin.blue2000.cc/dashboard');
+		});
+
+		it('rejects invalid admin session bootstrap return URLs', async () => {
+			env.CF_ACCESS_AUD = '';
+			env.CORS_ALLOW_ORIGINS = 'https://admin.blue2000.cc';
+
+			const response = await worker.fetch(
+				new Request('http://example.com/api/admin/session?returnTo=https%3A%2F%2Fevil.example%2Fphish'),
+				env as never,
+				createExecutionContext(),
+			);
+
+			expect(response.status).toBe(400);
+			expect(await response.json()).toEqual({
+				error: 'Invalid returnTo URL',
+			});
+		});
 
 	it('uses PBKDF2 for new signups', async () => {
 		const response = await worker.fetch(
@@ -1124,60 +1155,54 @@ describe('management worker API', () => {
 		expect(loginData.accessToken).toBeTruthy();
 	});
 
-	it('admin gets paginated, filtered, and searched users', async () => {
-		const adminToken = await jwt.sign({ admin: true }, env.JWT_SECRET);
+		it('admin gets paginated, filtered, and searched users', async () => {
+			env.CF_ACCESS_AUD = '';
 
-		// Seed a few users for testing
-		for (let i = 0; i < 5; i++) {
-			await worker.fetch(
-				new Request('http://example.com/api/signup', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ email: `testuser${i}@example.com`, password: 'strong-pass' }),
-				}),
-				env as never,
-				createExecutionContext(),
-			);
-		}
+			// Seed a few users for testing
+			for (let i = 0; i < 5; i++) {
+				await worker.fetch(
+					new Request('http://example.com/api/signup', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ email: `testuser${i}@example.com`, password: 'strong-pass' }),
+					}),
+					env as never,
+					createExecutionContext(),
+				);
+			}
 
 		// Make one a pro user
 		const proUser = Array.from(env.DB.users.values()).find(u => u.email === 'testuser3@example.com')!;
 		proUser.tier = 'pro';
 
-		// Test pagination limit
-		const resList = await worker.fetch(
-			new Request('http://example.com/api/admin/users?page=1&limit=2', {
-				headers: { Authorization: `Bearer ${adminToken}` },
-			}),
-			env as never,
-			createExecutionContext(),
-		);
-		const dataList = await resList.json() as any;
-		expect(dataList.users.length).toBe(2);
-		expect(dataList.total).toBeGreaterThanOrEqual(5);
+			// Test pagination limit
+			const resList = await worker.fetch(
+				new Request('http://example.com/api/admin/users?page=1&limit=2'),
+				env as never,
+				createExecutionContext(),
+			);
+			const dataList = await resList.json() as any;
+			expect(dataList.users.length).toBe(2);
+			expect(dataList.total).toBeGreaterThanOrEqual(5);
 
-		// Test search
-		const resSearch = await worker.fetch(
-			new Request('http://example.com/api/admin/users?search=testuser2', {
-				headers: { Authorization: `Bearer ${adminToken}` },
-			}),
-			env as never,
-			createExecutionContext(),
-		);
-		const dataSearch = await resSearch.json() as any;
-		expect(dataSearch.users.length).toBe(1);
-		expect(dataSearch.users[0].email).toBe('testuser2@example.com');
+			// Test search
+			const resSearch = await worker.fetch(
+				new Request('http://example.com/api/admin/users?search=testuser2'),
+				env as never,
+				createExecutionContext(),
+			);
+			const dataSearch = await resSearch.json() as any;
+			expect(dataSearch.users.length).toBe(1);
+			expect(dataSearch.users[0].email).toBe('testuser2@example.com');
 
-		// Test tier filter
-		const resTier = await worker.fetch(
-			new Request('http://example.com/api/admin/users?tier=pro', {
-				headers: { Authorization: `Bearer ${adminToken}` },
-			}),
-			env as never,
-			createExecutionContext(),
-		);
-		const dataTier = await resTier.json() as any;
-		expect(dataTier.users.length).toBe(1);
-		expect(dataTier.users[0].tier).toBe('pro');
+			// Test tier filter
+			const resTier = await worker.fetch(
+				new Request('http://example.com/api/admin/users?tier=pro'),
+				env as never,
+				createExecutionContext(),
+			);
+			const dataTier = await resTier.json() as any;
+			expect(dataTier.users.length).toBe(1);
+			expect(dataTier.users[0].tier).toBe('pro');
 	});
 });

@@ -13,12 +13,21 @@ type Client = {
 
 const CLIENTS: Client[] = [
     {
+        name: 'Clash Verge Rev',
+        platform: 'macOS / Linux',
+        platformIcon: '🧭',
+        url: 'https://github.com/clash-verge-rev/clash-verge-rev/releases',
+        description: 'Most popular desktop Mihomo client for macOS and Linux, with local Clash profile import.',
+        descriptionZh: '当前最流行的 macOS / Linux 桌面 Mihomo 客户端，支持导入本地 Clash 配置。',
+        free: true,
+    },
+    {
         name: 'v2rayN',
         platform: 'Windows',
         platformIcon: '🪟',
         url: 'https://github.com/2dust/v2rayN/releases',
-        description: 'Most popular Windows proxy client. Free & open source.',
-        descriptionZh: '最流行的 Windows 代理客户端，免费开源。',
+        description: 'Most popular Windows V2Ray/Xray client. Free and open source.',
+        descriptionZh: '当前最流行的 Windows V2Ray/Xray 客户端，免费开源。',
         free: true,
     },
     {
@@ -26,8 +35,8 @@ const CLIENTS: Client[] = [
         platform: 'Android',
         platformIcon: '📱',
         url: 'https://github.com/2dust/v2rayNG/releases',
-        description: 'Official Android client by v2ray. Free on GitHub.',
-        descriptionZh: 'v2ray 官方 Android 客户端，GitHub 免费下载。',
+        description: 'Most popular Android V2Ray/Xray client. Free on GitHub.',
+        descriptionZh: '当前最流行的 Android V2Ray/Xray 客户端，可在 GitHub 免费下载。',
         free: true,
     },
     {
@@ -35,34 +44,17 @@ const CLIENTS: Client[] = [
         platform: 'iOS',
         platformIcon: '🍎',
         url: 'https://apps.apple.com/app/shadowrocket/id932747118',
-        description: 'Fast & lightweight iOS proxy client. $2.99 one-time.',
-        descriptionZh: '轻量级 iOS 代理客户端，一次性购买 $2.99。',
-    },
-    {
-        name: 'V2rayU',
-        platform: 'macOS',
-        platformIcon: '💻',
-        url: 'https://github.com/yanue/V2rayU/releases',
-        description: 'Simple macOS client with menu bar control. Free.',
-        descriptionZh: '简洁的 macOS 客户端，支持菜单栏控制，免费。',
-        free: true,
+        description: 'Most popular iOS proxy client, with the highest visible App Store rating volume in this list.',
+        descriptionZh: '当前最流行的 iOS 代理客户端，在此列表中拥有最高的 App Store 可见评分数量。',
     },
     {
         name: 'Hiddify',
         platform: 'All Platforms',
         platformIcon: '🌐',
         url: 'https://github.com/hiddify/hiddify-app/releases',
-        description: 'Cross-platform client for Windows, macOS, Android, iOS & Linux.',
-        descriptionZh: '跨平台客户端，支持 Windows、macOS、Android、iOS 和 Linux。',
+        description: 'Best cross-platform fallback if you want one client across Windows, macOS, Android, iOS and Linux.',
+        descriptionZh: '如果你希望所有平台统一使用一个客户端，这是当前最好的跨平台备选。',
         free: true,
-    },
-    {
-        name: 'Quantumult X',
-        platform: 'iOS',
-        platformIcon: '🍎',
-        url: 'https://apps.apple.com/app/quantumult-x/id1443988620',
-        description: 'Advanced iOS proxy tool with powerful rules engine. $7.99.',
-        descriptionZh: '高级 iOS 代理工具，强大的规则引擎，$7.99。',
     },
 ];
 
@@ -76,8 +68,8 @@ export default function ClientsSection({ variant = 'landing' }: ClientsSectionPr
 
     const sectionTitle = isZh ? '推荐客户端' : 'Recommended Clients';
     const sectionSubtitle = isZh
-        ? '复制订阅链接后，导入到以下任意客户端即可使用。'
-        : 'Copy your subscription link and import it into any of these clients.';
+        ? '按当前平台主流客户端更新：Windows 用 v2rayN，Android 用 v2rayNG，iOS 用 Shadowrocket，macOS / Linux 用 Clash Verge Rev。'
+        : 'Updated to current mainstream picks by platform: v2rayN for Windows, v2rayNG for Android, Shadowrocket for iOS, and Clash Verge Rev for macOS/Linux.';
     const freeLabel = isZh ? '免费' : 'Free';
 
     const isDashboard = variant === 'dashboard';

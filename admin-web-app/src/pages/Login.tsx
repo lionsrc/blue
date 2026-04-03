@@ -2,7 +2,7 @@ import { RefreshCw } from 'lucide-react';
 import { useAuth } from '../auth';
 
 export default function Login() {
-    const { status, refreshSession } = useAuth();
+    const { status, authError, needsApiAccessLogin, refreshSession, openAccessLogin } = useAuth();
     const isChecking = status === 'loading';
 
     return (
@@ -22,8 +22,27 @@ export default function Login() {
                     <div className="bg-gray-900/70 border border-gray-700 rounded-lg px-4 py-4 text-sm text-gray-300 leading-6">
                         {isChecking
                             ? 'Checking your Cloudflare Access session.'
-                            : 'Sign in through the Cloudflare Access prompt for this site, then retry the access check if this screen remains visible.'}
+                            : needsApiAccessLogin
+                                ? 'This admin portal uses a separate API hostname. Complete Cloudflare Access for the API as well, then you will be sent back here automatically.'
+                                : 'Sign in through the Cloudflare Access prompt for this site, then retry the access check if this screen remains visible.'}
                     </div>
+
+                    {authError && (
+                        <div className="bg-red-950/60 border border-red-800 rounded-lg px-4 py-4 text-sm text-red-200 leading-6">
+                            {authError}
+                        </div>
+                    )}
+
+                    {needsApiAccessLogin && (
+                        <button
+                            type="button"
+                            onClick={openAccessLogin}
+                            disabled={isChecking}
+                            className="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-medium py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            Complete API Access
+                        </button>
+                    )}
 
                     <button
                         type="button"

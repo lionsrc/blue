@@ -1,11 +1,43 @@
 import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
 import type { Bindings } from '../types.js';
-import { authenticateAdmin } from '../auth.js';
+import { authenticateAdmin, getAllowedCorsOrigins } from '../auth.js';
 
 const admin = new Hono<{ Bindings: Bindings }>();
 
+const resolveAllowedReturnTo = (c: any) => {
+    const returnTo = c.req.query('returnTo');
+    if (!returnTo) {
+        return null;
+    }
+
+    try {
+        const url = new URL(returnTo);
+        if (!['http:', 'https:'].includes(url.protocol)) {
+            return null;
+        }
+
+        const allowedOrigins = getAllowedCorsOrigins(c);
+        if (!allowedOrigins.has(url.origin)) {
+            return null;
+        }
+
+        return url.toString();
+    } catch {
+        return null;
+    }
+};
+
 admin.get('/api/admin/session', authenticateAdmin, async (c: any) => {
+    if (c.req.query('returnTo') !== undefined) {
+        const returnTo = resolveAllowedReturnTo(c);
+        if (!returnTo) {
+            return c.json({ error: 'Invalid returnTo URL' }, 400);
+        }
+
+        return c.redirect(returnTo, 302);
+    }
+
     return c.json({ admin: c.get('admin') });
 });
 

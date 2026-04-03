@@ -3,8 +3,8 @@ import { useAuth } from '../auth';
 import { LogOut, Users, Server, Activity, ShieldBan, MonitorPlay, Plus, Eye, X, Search, ChevronLeft, ChevronRight, Filter } from 'lucide-react';
 import clsx from 'clsx';
 import { useDebounce } from 'use-debounce';
+import { buildApiUrl } from '../api';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8788';
 const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL || '';
 
 interface AdminUser {
@@ -113,7 +113,7 @@ export default function Dashboard() {
                 endpoint = '/api/admin/nodes';
             }
 
-            const res = await fetch(`${API_URL}${endpoint}`, {
+            const res = await fetch(buildApiUrl(endpoint), {
                 credentials: 'include',
             });
             if (res.status === 401 || res.status === 403) {
@@ -137,7 +137,7 @@ export default function Dashboard() {
 
     const toggleUserBlock = async (userId: string, currentlyActive: boolean) => {
         try {
-            await fetch(`${API_URL}/api/admin/users/${userId}/block`, {
+            await fetch(buildApiUrl(`/api/admin/users/${userId}/block`), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'text/plain'
@@ -156,7 +156,7 @@ export default function Dashboard() {
         setSelectedUser(user);
         setIsLoadingPayments(true);
         try {
-            const res = await fetch(`${API_URL}/api/admin/users/${user.id}/payments`, {
+            const res = await fetch(buildApiUrl(`/api/admin/users/${user.id}/payments`), {
                 credentials: 'include',
             });
             if (res.status === 401 || res.status === 403) {
@@ -180,7 +180,7 @@ export default function Dashboard() {
         setIsAddingNode(true);
         setAddNodeError(null);
         try {
-            const res = await fetch(`${API_URL}/api/admin/nodes`, {
+            const res = await fetch(buildApiUrl('/api/admin/nodes'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'text/plain'
@@ -650,23 +650,23 @@ export default function Dashboard() {
             )}
 
             {/* User Details Modal */}
-            {selectedUser && (
+                    {selectedUser && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
                     <div className="bg-gray-800 border border-gray-700 rounded-xl w-full max-w-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
                         {/* Header */}
-                        <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between bg-gray-800/80 sticky top-0">
-                            <div>
-                                <h3 className="text-xl font-bold text-white flex items-center space-x-2">
-                                    <span>{selectedUser.email}</span>
+                        <div className="px-6 py-4 border-b border-gray-700 bg-gray-800/80 sticky top-0 relative">
+                            <button onClick={() => setSelectedUser(null)} className="absolute top-4 right-4 z-10 text-gray-400 hover:text-white transition p-2 hover:bg-gray-700 rounded-lg">
+                                <X size={20} />
+                            </button>
+                            <div className="pr-11">
+                                <h3 className="text-xl font-bold text-white flex items-start space-x-2">
+                                    <span className="truncate block">{selectedUser.email}</span>
                                     <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
                                         {selectedUser.tier.toUpperCase()}
                                     </span>
                                 </h3>
                                 <p className="text-gray-400 text-sm mt-1">ID: <span className="font-mono">{selectedUser.id}</span></p>
                             </div>
-                            <button onClick={() => setSelectedUser(null)} className="text-gray-400 hover:text-white transition p-2 hover:bg-gray-700 rounded-lg">
-                                <X size={20} />
-                            </button>
                         </div>
 
                         {/* Scrollable Body */}

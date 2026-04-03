@@ -8,7 +8,7 @@ set -euo pipefail
 WORKER_URL=${WORKER_URL:-"https://api.blue2000.cc"}
 AGENT_SECRET=${AGENT_SECRET:?Set AGENT_SECRET before starting node_agent.sh}
 NODE_IP=${NODE_IP:-}
-INTERFACE=${INTERFACE:-"eth0"}
+INTERFACE=${INTERFACE:-}
 API_ENDPOINT="$WORKER_URL/api/agent/config"
 XRAY_CONF="/usr/local/etc/xray/config.json"
 LIMIT_STATE_FILE="/etc/superproxy/node-limits.json"
@@ -25,7 +25,24 @@ detect_public_ip() {
     printf '%s\n' "$detected_ip"
 }
 
+detect_primary_interface() {
+    local detected_interface
+    detected_interface=$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}')
+
+    if [ -z "$detected_interface" ]; then
+        echo "Unable to detect the primary network interface automatically. Set INTERFACE before running node_agent.sh." >&2
+        return 1
+    fi
+
+    printf '%s\n' "$detected_interface"
+}
+
 setup_tc() {
+    if ! ip link show "$INTERFACE" >/dev/null 2>&1; then
+        echo "Configured interface $INTERFACE does not exist." >&2
+        return 1
+    fi
+
     echo "Initializing root qdisc on $INTERFACE"
     tc qdisc del dev "$INTERFACE" root 2>/dev/null || true
     tc qdisc add dev "$INTERFACE" root handle 1: htb default 30
@@ -73,8 +90,16 @@ collect_payload() {
 
 NODE_IP=${NODE_IP:-$(detect_public_ip)}
 
+if [ -n "$INTERFACE" ] && ! ip link show "$INTERFACE" >/dev/null 2>&1; then
+    echo "Configured interface $INTERFACE does not exist. Falling back to auto-detection." >&2
+    INTERFACE=""
+fi
+
+INTERFACE=${INTERFACE:-$(detect_primary_interface)}
+
 echo "Using Worker API: $API_ENDPOINT"
 echo "Reporting node public IP as: $NODE_IP"
+echo "Using network interface: $INTERFACE"
 
 setup_tc
 

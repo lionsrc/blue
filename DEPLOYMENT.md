@@ -5,7 +5,7 @@ This runbook documents the first production deployment for `blue2000.cc`.
 ## Production Hostnames
 
 - `blue2000.cc`: user portal (Cloudflare Pages)
-- `admin.blue2000.cc`: admin portal (Cloudflare Pages, protected by Cloudflare Access)
+- `admin.blue2000.cc`: admin portal (Worker Assets app, protected by Cloudflare Access)
 - `api.blue2000.cc`: management API (Cloudflare Worker + D1)
 - `gw.blue2000.cc`: WebSocket proxy gateway (Cloudflare Worker + Durable Object)
 
@@ -15,7 +15,7 @@ This runbook documents the first production deployment for `blue2000.cc`.
 - management worker: `blue-management-worker`
 - proxy worker: `blue-proxy-gateway-worker`
 - user portal Pages project: `blue-user-portal`
-- admin portal Pages project: `blue-admin-portal`
+- admin portal worker: `blue-admin-portal`
 
 ## Current Pre-Deploy Limits
 
@@ -160,10 +160,17 @@ Build settings for [`/Users/liondad/dev/blue/admin-web-app`](/Users/liondad/dev/
 - Environment variable: `VITE_API_URL=https://api.blue2000.cc`
 - Optional environment variable: `VITE_GRAFANA_URL=https://grafana.blue2000.cc`
 
-Deploy it to a separate Cloudflare Pages project and attach:
+Deploy it as the Worker Assets app `blue-admin-portal`.
 
-- project name: `blue-admin-portal`
-- `admin.blue2000.cc`
+The checked-in [`/Users/liondad/dev/blue/admin-web-app/wrangler.toml`](/Users/liondad/dev/blue/admin-web-app/wrangler.toml) is the source of truth for the worker name. Build with the production API URL, then deploy with Wrangler:
+
+```bash
+cd /Users/liondad/dev/blue/admin-web-app
+VITE_API_URL=https://api.blue2000.cc npm run build
+wrangler deploy
+```
+
+`admin.blue2000.cc` is already attached to that worker in Cloudflare, so you should deploy to the existing worker rather than create a separate Pages project.
 
 After the site is live:
 
@@ -231,7 +238,6 @@ Admin portal:
 
 ```bash
 cd /Users/liondad/dev/blue/admin-web-app
-npm run build
+VITE_API_URL=https://api.blue2000.cc npm run build
+wrangler deploy
 ```
-
-Then push a new Pages deployment from the Pages project or your Git-connected branch.

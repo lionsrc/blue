@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { FiCopy, FiCheckCircle, FiTrendingUp, FiLogOut, FiCreditCard, FiActivity, FiGlobe, FiChevronDown, FiMail, FiLock, FiClock, FiTrash2 } from 'react-icons/fi';
+import { FiCopy, FiCheckCircle, FiTrendingUp, FiLogOut, FiCreditCard, FiActivity, FiGlobe, FiChevronDown, FiMail, FiLock, FiClock, FiTrash2, FiDownload } from 'react-icons/fi';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import ClientsSection from '../components/ClientsSection';
@@ -67,8 +67,104 @@ const readJson = async (response: Response) => {
     }
 };
 
+type ExportAction = 'vless' | 'clash';
+
+type ParsedVlessConfig = {
+    uuid: string;
+    server: string;
+    port: number;
+    tls: boolean;
+    serverName: string;
+    hostHeader: string;
+    path: string;
+    network: string;
+    fingerprint: string | null;
+};
+
+const sanitizeProfileSegment = (value: string) => {
+    const normalized = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return normalized || 'profile';
+};
+
+const parseVlessConfig = (vlessLink: string): ParsedVlessConfig => {
+    const connection = new URL(vlessLink);
+
+    if (connection.protocol !== 'vless:') {
+        throw new Error('Unsupported proxy protocol.');
+    }
+
+    if (!connection.username || !connection.hostname) {
+        throw new Error('Invalid VLESS link.');
+    }
+
+    return {
+        uuid: connection.username,
+        server: connection.hostname,
+        port: Number(connection.port || '443'),
+        tls: connection.searchParams.get('security') === 'tls',
+        serverName: connection.searchParams.get('sni') || connection.hostname,
+        hostHeader: connection.searchParams.get('host') || connection.hostname,
+        path: connection.searchParams.get('path') || '/',
+        network: connection.searchParams.get('type') || 'ws',
+        fingerprint: connection.searchParams.get('fp'),
+    };
+};
+
+const buildClashProfile = (subscription: SubscriptionData, planLabel: string) => {
+    const config = parseVlessConfig(subscription.vlessLink);
+
+    if (config.network !== 'ws') {
+        throw new Error('Unsupported VLESS transport for Clash export.');
+    }
+
+    const proxyName = `Blue Lotus ${planLabel}`;
+    const fileName = `blue-lotus-${subscription.planId}-${sanitizeProfileSegment(config.server)}.yaml`;
+    const lines = [
+        'mixed-port: 7890',
+        'allow-lan: false',
+        'mode: rule',
+        'log-level: info',
+        'unified-delay: true',
+        'profile:',
+        '  store-selected: true',
+        '  store-fake-ip: true',
+        'proxies:',
+        `  - name: ${JSON.stringify(proxyName)}`,
+        '    type: vless',
+        `    server: ${JSON.stringify(config.server)}`,
+        `    port: ${config.port}`,
+        `    uuid: ${JSON.stringify(config.uuid)}`,
+        '    udp: true',
+        `    tls: ${config.tls ? 'true' : 'false'}`,
+        `    servername: ${JSON.stringify(config.serverName)}`,
+        '    skip-cert-verify: false',
+        '    network: ws',
+        '    ws-opts:',
+        `      path: ${JSON.stringify(config.path)}`,
+        '      headers:',
+        `        Host: ${JSON.stringify(config.hostHeader)}`,
+        'proxy-groups:',
+        '  - name: "Proxy"',
+        '    type: select',
+        '    proxies:',
+        `      - ${JSON.stringify(proxyName)}`,
+        '      - DIRECT',
+        'rules:',
+        '  - MATCH,Proxy',
+    ];
+
+    if (config.fingerprint) {
+        lines.splice(17, 0, `    client-fingerprint: ${JSON.stringify(config.fingerprint)}`);
+    }
+
+    return {
+        fileName,
+        content: `${lines.join('\n')}\n`,
+    };
+};
+
 export default function Dashboard() {
-    const [copied, setCopied] = useState(false);
+    const [exportFeedback, setExportFeedback] = useState<ExportAction | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
     const [user, setUser] = useState<UserProfile | null>(null);
     const [plans, setPlans] = useState<PlanData[]>(FALLBACK_PLANS);
@@ -76,13 +172,21 @@ export default function Dashboard() {
     const [isLoading, setIsLoading] = useState(true);
     const [loadingError, setLoadingError] = useState('');
     const [subscriptionError, setSubscriptionError] = useState('');
+    const [exportError, setExportError] = useState('');
     const [purchaseError, setPurchaseError] = useState('');
     const [purchaseInFlight, setPurchaseInFlight] = useState<PlanId | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
     const plansRef = useRef<HTMLDivElement>(null);
+    const feedbackTimeoutRef = useRef<number | null>(null);
     const navigate = useNavigate();
     const { t } = useTranslation();
     const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8787';
+
+    useEffect(() => () => {
+        if (feedbackTimeoutRef.current !== null) {
+            window.clearTimeout(feedbackTimeoutRef.current);
+        }
+    }, []);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -108,6 +212,7 @@ export default function Dashboard() {
             setIsLoading(true);
             setLoadingError('');
             setSubscriptionError('');
+            setExportError('');
 
             const authHeaders = {
                 Authorization: `Bearer ${token}`,
@@ -170,14 +275,51 @@ export default function Dashboard() {
         };
     }, [apiUrl, navigate, t]);
 
-    const handleCopy = () => {
-        if (!subscription?.subscriptionUrlData) {
+    const setTimedFeedback = (action: ExportAction) => {
+        setExportFeedback(action);
+        if (feedbackTimeoutRef.current !== null) {
+            window.clearTimeout(feedbackTimeoutRef.current);
+        }
+
+        feedbackTimeoutRef.current = window.setTimeout(() => {
+            setExportFeedback(null);
+            feedbackTimeoutRef.current = null;
+        }, 2000);
+    };
+
+    const handleCopyVlessLink = async () => {
+        if (!subscription?.vlessLink) {
             return;
         }
 
-        navigator.clipboard.writeText(subscription.subscriptionUrlData);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        try {
+            await navigator.clipboard.writeText(subscription.vlessLink);
+            setExportError('');
+            setTimedFeedback('vless');
+        } catch {
+            setExportError(t('dashboard.copyFailed'));
+        }
+    };
+
+    const handleDownloadClashProfile = () => {
+        if (!subscription) {
+            return;
+        }
+
+        try {
+            const clashProfile = buildClashProfile(subscription, activePlanLabels[subscription.planId]);
+            const blob = new Blob([clashProfile.content], { type: 'application/x-yaml;charset=utf-8' });
+            const downloadUrl = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = downloadUrl;
+            link.download = clashProfile.fileName;
+            link.click();
+            URL.revokeObjectURL(downloadUrl);
+            setExportError('');
+            setTimedFeedback('clash');
+        } catch {
+            setExportError(t('dashboard.clashExportError'));
+        }
     };
 
     const handleLogout = () => {
@@ -530,7 +672,7 @@ export default function Dashboard() {
                             <FiGlobe className="mr-3 text-blue-400" />
                             {t('dashboard.subConfig')}
                         </h2>
-                        <p className="text-slate-400 text-sm ml-9">{t('dashboard.importUrl')}</p>
+                        <p className="text-slate-400 text-sm ml-9">{t('dashboard.exportHelp')}</p>
                     </div>
 
                     <div className="p-8">
@@ -540,30 +682,70 @@ export default function Dashboard() {
                             </div>
                         )}
 
-                        <div className="group relative rounded-xl border border-white/10 bg-black/40 overflow-hidden flex items-stretch focus-within:border-blue-500/50 focus-within:ring-1 focus-within:ring-blue-500/50 transition-all duration-300 mb-10">
-                            <input
-                                type="text"
-                                readOnly
-                                value={subscription?.subscriptionUrlData || ''}
-                                className="w-full bg-transparent py-4 px-6 text-slate-300 font-mono text-sm focus:outline-none placeholder-slate-600 selection:bg-blue-500/30"
-                            />
-                            <div className="p-2">
+                        {exportError && (
+                            <div className="mb-6 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                                {exportError}
+                            </div>
+                        )}
+
+                        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(280px,1fr)] mb-10">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
+                                <div className="mb-4">
+                                    <h3 className="text-lg font-bold text-white">{t('dashboard.vlessLinkLabel')}</h3>
+                                    <p className="mt-1 text-sm text-slate-400">{t('dashboard.vlessLinkHint')}</p>
+                                </div>
+
+                                <div className="group relative rounded-xl border border-white/10 bg-black/40 overflow-hidden flex items-stretch focus-within:border-blue-500/50 focus-within:ring-1 focus-within:ring-blue-500/50 transition-all duration-300">
+                                    <input
+                                        type="text"
+                                        readOnly
+                                        value={subscription?.vlessLink || ''}
+                                        className="w-full bg-transparent py-4 px-6 text-slate-300 font-mono text-sm focus:outline-none placeholder-slate-600 selection:bg-blue-500/30"
+                                    />
+                                    <div className="p-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleCopyVlessLink()}
+                                            disabled={!subscription}
+                                            className={`h-full flex items-center justify-center px-6 rounded-lg font-bold transition-all duration-300 ${exportFeedback === 'vless' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/20'} ${!subscription ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                        >
+                                            {exportFeedback === 'vless' ? (
+                                                <>
+                                                    <FiCheckCircle size={20} className="mr-2" /> {t('dashboard.copied')}
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <FiCopy size={20} className="mr-2 group-hover:scale-110 duration-200" /> {t('dashboard.copyVlessLink')}
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
+                                <div className="mb-4">
+                                    <h3 className="text-lg font-bold text-white">{t('dashboard.clashProfileLabel')}</h3>
+                                    <p className="mt-1 text-sm text-slate-400">{t('dashboard.clashProfileHint')}</p>
+                                </div>
+
                                 <button
                                     type="button"
-                                    onClick={handleCopy}
+                                    onClick={handleDownloadClashProfile}
                                     disabled={!subscription}
-                                    className={`h-full flex items-center justify-center px-8 rounded-lg font-bold transition-all duration-300 ${copied ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/20'} ${!subscription ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                    className={`inline-flex items-center justify-center rounded-xl px-5 py-3 font-bold transition-all duration-300 ${exportFeedback === 'clash' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/20'} ${!subscription ? 'opacity-60 cursor-not-allowed' : ''}`}
                                 >
-                                    {copied ? (
+                                    {exportFeedback === 'clash' ? (
                                         <>
-                                            <FiCheckCircle size={20} className="mr-2" /> {t('dashboard.copied')}
+                                            <FiCheckCircle size={20} className="mr-2" /> {t('dashboard.downloaded')}
                                         </>
                                     ) : (
                                         <>
-                                            <FiCopy size={20} className="mr-2 group-hover:scale-110 duration-200" /> {t('dashboard.copyLink')}
+                                            <FiDownload size={20} className="mr-2" /> {t('dashboard.downloadClashProfile')}
                                         </>
                                     )}
                                 </button>
+                                <p className="mt-4 text-xs leading-relaxed text-slate-500">{t('dashboard.clashImportHint')}</p>
                             </div>
                         </div>
 

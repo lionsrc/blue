@@ -9,6 +9,7 @@ echo "Starting SuperProxy Node Setup..."
 WORKER_URL=${WORKER_URL:-"https://api.blue2000.cc"}
 AGENT_SECRET=${AGENT_SECRET:?Set AGENT_SECRET before running setup_proxy_node.sh}
 NODE_IP=${NODE_IP:-}
+INTERFACE=${INTERFACE:-}
 
 # 1. Update and install dependencies
 apt-get update
@@ -58,7 +59,7 @@ cat > /etc/superproxy/node-agent.env << EOF
 WORKER_URL="$WORKER_URL"
 AGENT_SECRET="$AGENT_SECRET"
 NODE_IP="$NODE_IP"
-INTERFACE="eth0"
+INTERFACE="$INTERFACE"
 EOF
 chmod 600 /etc/superproxy/node-agent.env
 
