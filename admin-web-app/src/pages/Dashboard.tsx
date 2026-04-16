@@ -24,6 +24,8 @@ interface AdminUser {
     createdAt: string;
     nodeId: string | null;
     port: number | null;
+    nodeName: string | null;
+    nodePublicIp: string | null;
 }
 
 interface AdminNode {
@@ -34,7 +36,29 @@ interface AdminNode {
     activeConnections: number;
     cpuLoad: number;
     lastPing: string | null;
+    ipUpdatedAt: string | null;
+    agentTokenConfigured: number;
     allocationCount: number;
+}
+
+interface NodeCredentials {
+    nodeId: string;
+    agentToken: string;
+    nodeName: string;
+    source: 'created' | 'rotated';
+}
+
+interface NodeIpHistoryEntry {
+    id: string;
+    previousIp: string | null;
+    newIp: string;
+    changedAt: string;
+}
+
+interface NodeHistoryModalState {
+    nodeId: string;
+    nodeName: string;
+    history: NodeIpHistoryEntry[];
 }
 
 interface AdminPayment {
@@ -69,11 +93,22 @@ export default function Dashboard() {
     const [newNodeIp, setNewNodeIp] = useState('');
     const [isAddingNode, setIsAddingNode] = useState(false);
     const [addNodeError, setAddNodeError] = useState<string | null>(null);
+    const [nodeActionError, setNodeActionError] = useState<string | null>(null);
+    const [nodeCredentials, setNodeCredentials] = useState<NodeCredentials | null>(null);
+    const [copiedValue, setCopiedValue] = useState<string | null>(null);
+    const [isRotatingNodeId, setIsRotatingNodeId] = useState<string | null>(null);
+    const [selectedNodeHistory, setSelectedNodeHistory] = useState<NodeHistoryModalState | null>(null);
+    const [isLoadingNodeHistory, setIsLoadingNodeHistory] = useState(false);
+    const [nodeHistoryError, setNodeHistoryError] = useState<string | null>(null);
 
     // --- User Details Modal State ---
     const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
     const [userPayments, setUserPayments] = useState<AdminPayment[]>([]);
     const [isLoadingPayments, setIsLoadingPayments] = useState(false);
+    const [userToMove, setUserToMove] = useState<AdminUser | null>(null);
+    const [destinationNodeId, setDestinationNodeId] = useState('');
+    const [isMovingUser, setIsMovingUser] = useState(false);
+    const [moveUserError, setMoveUserError] = useState<string | null>(null);
 
     const formatBytes = (bytes: number | null | undefined) => {
         if (!bytes) return '0 B';
@@ -81,6 +116,16 @@ export default function Dashboard() {
         const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    const copyToClipboard = async (value: string, feedbackKey: string) => {
+        try {
+            await navigator.clipboard.writeText(value);
+            setCopiedValue(feedbackKey);
+            window.setTimeout(() => setCopiedValue((current) => (current === feedbackKey ? null : current)), 2000);
+        } catch (err) {
+            console.error('Failed to copy to clipboard', err);
+        }
     };
 
     useEffect(() => {
@@ -100,7 +145,6 @@ export default function Dashboard() {
 
         setIsLoading(true);
         try {
-            let endpoint = '';
             if (activeTab === 'users') {
                 const params = new URLSearchParams({
                     page: currentPage.toString(),
@@ -108,24 +152,37 @@ export default function Dashboard() {
                     search: debouncedSearchQuery,
                     tier: tierFilter
                 });
-                endpoint = `/api/admin/users?${params.toString()}`;
-            } else {
-                endpoint = '/api/admin/nodes';
-            }
+                const [usersRes, nodesRes] = await Promise.all([
+                    fetch(buildApiUrl(`/api/admin/users?${params.toString()}`), {
+                        credentials: 'include',
+                    }),
+                    fetch(buildApiUrl('/api/admin/nodes'), {
+                        credentials: 'include',
+                    }),
+                ]);
 
-            const res = await fetch(buildApiUrl(endpoint), {
-                credentials: 'include',
-            });
-            if (res.status === 401 || res.status === 403) {
-                await refreshSession();
-                return;
-            }
-            const data = await res.json();
-            if (activeTab === 'users') {
-                setUsers(data.users || []);
-                setTotalPages(data.totalPages || 1);
-                setTotalUsers(data.total || 0);
+                if ([usersRes.status, nodesRes.status].some((status) => status === 401 || status === 403)) {
+                    await refreshSession();
+                    return;
+                }
+
+                const [usersData, nodesData] = await Promise.all([
+                    usersRes.json(),
+                    nodesRes.json(),
+                ]);
+                setUsers(usersData.users || []);
+                setTotalPages(usersData.totalPages || 1);
+                setTotalUsers(usersData.total || 0);
+                setNodes(nodesData.nodes || []);
             } else {
+                const res = await fetch(buildApiUrl('/api/admin/nodes'), {
+                    credentials: 'include',
+                });
+                if (res.status === 401 || res.status === 403) {
+                    await refreshSession();
+                    return;
+                }
+                const data = await res.json();
                 setNodes(data.nodes || []);
             }
         } catch (err) {
@@ -179,6 +236,7 @@ export default function Dashboard() {
         e.preventDefault();
         setIsAddingNode(true);
         setAddNodeError(null);
+        setNodeActionError(null);
         try {
             const res = await fetch(buildApiUrl('/api/admin/nodes'), {
                 method: 'POST',
@@ -194,14 +252,20 @@ export default function Dashboard() {
                 return;
             }
 
+            const data = await res.json();
             if (res.ok) {
                 setShowAddNode(false);
                 setNewNodeName('');
                 setNewNodeIp('');
+                setNodeCredentials({
+                    nodeId: data.nodeId,
+                    agentToken: data.agentToken,
+                    nodeName: newNodeName,
+                    source: 'created',
+                });
                 fetchData();
             } else {
-                const error = await res.json();
-                setAddNodeError(error.error || "Failed to add node");
+                setAddNodeError(data.error || "Failed to add node");
             }
         } catch (err) {
             setAddNodeError("Network error registering node");
@@ -209,6 +273,150 @@ export default function Dashboard() {
             setIsAddingNode(false);
         }
     };
+
+    const handleRotateNodeToken = async (node: AdminNode) => {
+        setNodeActionError(null);
+        setIsRotatingNodeId(node.id);
+
+        try {
+            const res = await fetch(buildApiUrl(`/api/admin/nodes/${node.id}/rotate-token`), {
+                method: 'POST',
+                credentials: 'include',
+            });
+
+            if (res.status === 401 || res.status === 403) {
+                await refreshSession();
+                return;
+            }
+
+            const data = await res.json();
+            if (!res.ok) {
+                setNodeActionError(data.error || 'Failed to rotate node token');
+                return;
+            }
+
+            setNodeCredentials({
+                nodeId: data.nodeId,
+                agentToken: data.agentToken,
+                nodeName: node.name,
+                source: 'rotated',
+            });
+            setNodes((current) => current.map((candidate) => (
+                candidate.id === node.id
+                    ? { ...candidate, agentTokenConfigured: 1 }
+                    : candidate
+            )));
+            fetchData();
+        } catch (err) {
+            console.error('Failed to rotate node token', err);
+            setNodeActionError('Network error rotating node token');
+        } finally {
+            setIsRotatingNodeId(null);
+        }
+    };
+
+    const openNodeHistory = async (node: AdminNode) => {
+        setSelectedNodeHistory({
+            nodeId: node.id,
+            nodeName: node.name,
+            history: [],
+        });
+        setNodeHistoryError(null);
+        setIsLoadingNodeHistory(true);
+
+        try {
+            const res = await fetch(buildApiUrl(`/api/admin/nodes/${node.id}/ip-history?limit=20`), {
+                credentials: 'include',
+            });
+
+            if (res.status === 401 || res.status === 403) {
+                await refreshSession();
+                setSelectedNodeHistory(null);
+                return;
+            }
+
+            const data = await res.json();
+            if (!res.ok) {
+                setNodeHistoryError(data.error || 'Failed to load IP history');
+                return;
+            }
+
+            setSelectedNodeHistory({
+                nodeId: data.nodeId,
+                nodeName: data.nodeName,
+                history: data.history || [],
+            });
+        } catch (err) {
+            console.error('Failed to load node IP history', err);
+            setNodeHistoryError('Network error loading IP history');
+        } finally {
+            setIsLoadingNodeHistory(false);
+        }
+    };
+
+    const openMoveUserModal = (user: AdminUser) => {
+        const firstAvailableDestination = nodes.find((node) => node.status === 'active' && node.id !== user.nodeId);
+        setUserToMove(user);
+        setDestinationNodeId(firstAvailableDestination?.id || '');
+        setMoveUserError(null);
+    };
+
+    const handleMoveUser = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!userToMove || !destinationNodeId) {
+            setMoveUserError('Select an active destination node.');
+            return;
+        }
+
+        setIsMovingUser(true);
+        setMoveUserError(null);
+
+        try {
+            const res = await fetch(buildApiUrl(`/api/admin/users/${userToMove.id}/move`), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'text/plain'
+                },
+                credentials: 'include',
+                body: JSON.stringify({ nodeId: destinationNodeId }),
+            });
+
+            if (res.status === 401 || res.status === 403) {
+                await refreshSession();
+                return;
+            }
+
+            const data = await res.json();
+            if (!res.ok) {
+                setMoveUserError(data.error || 'Failed to move user');
+                return;
+            }
+
+            setSelectedUser((current) => (
+                current && current.id === userToMove.id
+                    ? {
+                        ...current,
+                        nodeId: data.allocation.nodeId,
+                        port: data.allocation.port,
+                        nodeName: data.allocation.nodeName,
+                        nodePublicIp: data.allocation.nodePublicIp,
+                    }
+                    : current
+            ));
+            setUserToMove(null);
+            setDestinationNodeId('');
+            await fetchData();
+        } catch (err) {
+            console.error("Failed to move user", err);
+            setMoveUserError('Network error moving user');
+        } finally {
+            setIsMovingUser(false);
+        }
+    };
+
+    const moveTargetOptions = userToMove
+        ? nodes.filter((node) => node.status === 'active' && node.id !== userToMove.nodeId)
+        : [];
 
     return (
         <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col">
@@ -393,9 +601,13 @@ export default function Dashboard() {
                                                         </td>
                                                         <td className="px-6 py-4 text-gray-400">
                                                             {user.nodeId ? (
-                                                                <div className="flex items-center space-x-1">
-                                                                    <MonitorPlay size={14} className="text-green-500" />
-                                                                    <span>Port: {user.port}</span>
+                                                                <div className="space-y-1">
+                                                                    <div className="flex items-center space-x-1">
+                                                                        <MonitorPlay size={14} className="text-green-500" />
+                                                                        <span className="text-gray-200">{user.nodeName || user.nodeId}</span>
+                                                                    </div>
+                                                                    <div className="text-xs text-gray-500 font-mono">{user.nodePublicIp || user.nodeId}</div>
+                                                                    <div className="text-xs text-gray-500">Port: {user.port}</div>
                                                                 </div>
                                                             ) : (
                                                                 <span className="text-gray-600 italic">Not Connected</span>
@@ -419,6 +631,14 @@ export default function Dashboard() {
                                                                 >
                                                                     <Eye size={14} />
                                                                     <span>Details</span>
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => openMoveUserModal(user)}
+                                                                    disabled={!user.nodeId || !nodes.some((node) => node.status === 'active' && node.id !== user.nodeId)}
+                                                                    className="px-3 py-1.5 rounded text-xs font-medium border bg-amber-500/10 border-amber-500/20 text-amber-300 hover:bg-amber-500 hover:text-white transition-colors flex items-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-amber-500/10 disabled:hover:text-amber-300"
+                                                                >
+                                                                    <Server size={14} />
+                                                                    <span>Move Node</span>
                                                                 </button>
                                                                 <button
                                                                     onClick={() => toggleUserBlock(user.id, !!user.isActive)}
@@ -470,6 +690,11 @@ export default function Dashboard() {
                             ) : activeTab === 'nodes' ? (
                                 // --- NODES TABLE ---
                                 <div className="relative overflow-x-auto min-h-[400px]">
+                                    {nodeActionError && (
+                                        <div className="mx-4 mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                                            {nodeActionError}
+                                        </div>
+                                    )}
                                     {isLoading && (
                                         <div className="absolute inset-0 bg-gray-900/50 backdrop-blur-[2px] z-10 flex flex-col items-center justify-center text-gray-400">
                                             <Activity size={32} className="animate-spin mb-4 text-blue-500" />
@@ -482,7 +707,8 @@ export default function Dashboard() {
                                                 <th className="px-6 py-4 font-medium">Server Name / IP</th>
                                                 <th className="px-6 py-4 font-medium">Status</th>
                                                 <th className="px-6 py-4 font-medium">Client Load</th>
-                                                <th className="px-6 py-4 font-medium text-right">Last Ping</th>
+                                                <th className="px-6 py-4 font-medium">Last Seen</th>
+                                                <th className="px-6 py-4 font-medium text-right">Actions</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-gray-700/50">
@@ -493,6 +719,9 @@ export default function Dashboard() {
                                                     <td className="px-6 py-4">
                                                         <div className="font-medium text-gray-200">{node.name}</div>
                                                         <div className="text-xs text-gray-400 mt-0.5 font-mono">{node.publicIp}</div>
+                                                        <div className="text-xs text-gray-500 mt-1">
+                                                            {node.ipUpdatedAt ? `IP updated ${new Date(node.ipUpdatedAt).toLocaleString()}` : 'IP has not changed since registration'}
+                                                        </div>
                                                     </td>
                                                     <td className="px-6 py-4">
                                                         <span className={clsx("inline-flex px-2 py-1 rounded-full text-xs font-medium border",
@@ -502,6 +731,9 @@ export default function Dashboard() {
                                                         )}>
                                                             {node.status.toUpperCase()}
                                                         </span>
+                                                        <div className="text-xs text-gray-500 mt-2">
+                                                            {node.agentTokenConfigured ? 'Agent token issued' : 'Needs token provisioning'}
+                                                        </div>
                                                     </td>
                                                     <td className="px-6 py-4">
                                                         <div className="flex flex-col justify-center">
@@ -512,8 +744,30 @@ export default function Dashboard() {
                                                             </div>
                                                         </div>
                                                     </td>
-                                                    <td className="px-6 py-4 text-right text-xs text-gray-400">
-                                                        {node.lastPing ? new Date(node.lastPing).toLocaleString() : 'Never'}
+                                                    <td className="px-6 py-4 text-xs text-gray-400">
+                                                        <div>{node.lastPing ? new Date(node.lastPing).toLocaleString() : 'Never'}</div>
+                                                        <div className="mt-1 text-gray-500">CPU load {node.cpuLoad.toFixed(2)}</div>
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        <div className="flex justify-end gap-2">
+                                                            <button
+                                                                onClick={() => handleRotateNodeToken(node)}
+                                                                disabled={isRotatingNodeId === node.id}
+                                                                className="px-3 py-1.5 rounded text-xs font-medium border bg-blue-500/10 border-blue-500/20 text-blue-300 hover:bg-blue-500 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                            >
+                                                                {isRotatingNodeId === node.id
+                                                                    ? 'Issuing...'
+                                                                    : node.agentTokenConfigured
+                                                                        ? 'Rotate Token'
+                                                                        : 'Provision Token'}
+                                                            </button>
+                                                            <button
+                                                                onClick={() => openNodeHistory(node)}
+                                                                className="px-3 py-1.5 rounded text-xs font-medium border bg-gray-700/60 border-gray-600 text-gray-200 hover:bg-gray-600 transition-colors"
+                                                            >
+                                                                IP History
+                                                            </button>
+                                                        </div>
                                                     </td>
                                                 </tr>
                                             ))}
@@ -642,6 +896,217 @@ export default function Dashboard() {
                                 <button type="button" onClick={() => setShowAddNode(false)} className="px-4 py-2 text-gray-400 hover:text-white transition">Cancel</button>
                                 <button type="submit" disabled={isAddingNode} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg transition disabled:opacity-50">
                                     {isAddingNode ? 'Adding...' : 'Register Node'}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {nodeCredentials && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-gray-800 border border-gray-700 rounded-xl p-6 w-full max-w-2xl shadow-2xl">
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <h3 className="text-xl font-bold text-white">
+                                    {nodeCredentials.source === 'created' ? 'Node Credentials' : 'Rotated Node Credentials'}
+                                </h3>
+                                <p className="text-gray-400 text-sm mt-2">
+                                    Save these values now for <span className="text-white">{nodeCredentials.nodeName}</span>. The agent token is only shown in this response.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setNodeCredentials(null)}
+                                className="text-gray-400 hover:text-white transition p-2 hover:bg-gray-700 rounded-lg"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        <div className="mt-5 rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                            Keep <code className="text-amber-100">X-Agent-Secret</code> configured during the transition period. These values add the stable per-node identity on top of the shared secret.
+                        </div>
+
+                        <div className="mt-6 grid gap-4 md:grid-cols-2">
+                            <div className="rounded-lg border border-gray-700 bg-gray-900/60 p-4">
+                                <div className="text-xs uppercase tracking-wide text-gray-500">Node ID</div>
+                                <div className="mt-2 font-mono text-sm text-white break-all">{nodeCredentials.nodeId}</div>
+                                <button
+                                    type="button"
+                                    onClick={() => copyToClipboard(nodeCredentials.nodeId, 'node-id')}
+                                    className="mt-3 rounded-lg border border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-200 hover:bg-gray-700 transition-colors"
+                                >
+                                    {copiedValue === 'node-id' ? 'Copied' : 'Copy Node ID'}
+                                </button>
+                            </div>
+                            <div className="rounded-lg border border-gray-700 bg-gray-900/60 p-4">
+                                <div className="text-xs uppercase tracking-wide text-gray-500">Agent Token</div>
+                                <div className="mt-2 font-mono text-sm text-white break-all">{nodeCredentials.agentToken}</div>
+                                <button
+                                    type="button"
+                                    onClick={() => copyToClipboard(nodeCredentials.agentToken, 'agent-token')}
+                                    className="mt-3 rounded-lg border border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-200 hover:bg-gray-700 transition-colors"
+                                >
+                                    {copiedValue === 'agent-token' ? 'Copied' : 'Copy Agent Token'}
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="mt-6 rounded-lg border border-gray-700 bg-gray-900/60 p-4">
+                            <div className="flex items-center justify-between gap-4">
+                                <div>
+                                    <div className="text-xs uppercase tracking-wide text-gray-500">Environment Snippet</div>
+                                    <p className="mt-1 text-xs text-gray-400">Use this in <code className="text-blue-300">/etc/superproxy/agent.env</code>.</p>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => copyToClipboard(`NODE_ID=${nodeCredentials.nodeId}\nAGENT_TOKEN=${nodeCredentials.agentToken}`, 'env-snippet')}
+                                    className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs font-medium text-blue-300 hover:bg-blue-500 hover:text-white transition-colors"
+                                >
+                                    {copiedValue === 'env-snippet' ? 'Copied' : 'Copy Snippet'}
+                                </button>
+                            </div>
+                            <pre className="mt-3 overflow-x-auto rounded-lg bg-gray-950/80 p-4 text-xs text-gray-200">{`NODE_ID=${nodeCredentials.nodeId}
+AGENT_TOKEN=${nodeCredentials.agentToken}`}</pre>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {selectedNodeHistory && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-gray-800 border border-gray-700 rounded-xl p-6 w-full max-w-2xl shadow-2xl">
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <h3 className="text-xl font-bold text-white">IP History</h3>
+                                <p className="text-gray-400 text-sm mt-2">
+                                    Recent public IP changes for <span className="text-white">{selectedNodeHistory.nodeName}</span>.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setSelectedNodeHistory(null)}
+                                className="text-gray-400 hover:text-white transition p-2 hover:bg-gray-700 rounded-lg"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        {isLoadingNodeHistory ? (
+                            <div className="py-10 flex flex-col items-center justify-center text-gray-400">
+                                <Activity size={28} className="animate-spin mb-4 text-blue-500" />
+                                <p>Loading node history...</p>
+                            </div>
+                        ) : nodeHistoryError ? (
+                            <div className="mt-6 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                                {nodeHistoryError}
+                            </div>
+                        ) : selectedNodeHistory.history.length === 0 ? (
+                            <div className="mt-6 rounded-lg border border-gray-700 bg-gray-900/50 px-4 py-6 text-sm text-gray-400">
+                                No IP changes recorded for this node yet.
+                            </div>
+                        ) : (
+                            <div className="mt-6 overflow-hidden rounded-lg border border-gray-700">
+                                <table className="w-full text-left text-sm text-gray-300">
+                                    <thead className="bg-gray-900/50 text-xs uppercase text-gray-400 border-b border-gray-700">
+                                        <tr>
+                                            <th className="px-4 py-3 font-medium">Changed At</th>
+                                            <th className="px-4 py-3 font-medium">Previous IP</th>
+                                            <th className="px-4 py-3 font-medium">New IP</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-700/50 bg-gray-900/30">
+                                        {selectedNodeHistory.history.map((entry) => (
+                                            <tr key={entry.id}>
+                                                <td className="px-4 py-3 text-gray-300">{new Date(entry.changedAt).toLocaleString()}</td>
+                                                <td className="px-4 py-3 font-mono text-xs text-gray-400">{entry.previousIp || 'Unknown'}</td>
+                                                <td className="px-4 py-3 font-mono text-xs text-white">{entry.newIp}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Move User Modal */}
+            {userToMove && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-gray-800 border border-gray-700 rounded-xl p-6 w-full max-w-lg shadow-2xl">
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <h3 className="text-xl font-bold text-white">Move User To Another Node</h3>
+                                <p className="text-gray-400 text-sm mt-2">
+                                    Reassigns <span className="text-white">{userToMove.email}</span> to a different active node while preserving the existing VLESS UUID.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setUserToMove(null)}
+                                className="text-gray-400 hover:text-white transition p-2 hover:bg-gray-700 rounded-lg"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        <div className="mt-5 rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                            The gateway still routes through a single backend origin. Only move users to the node currently serving <code className="text-amber-100">gw.blue2000.cc</code>.
+                        </div>
+
+                        {moveUserError && (
+                            <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                                {moveUserError}
+                            </div>
+                        )}
+
+                        <form onSubmit={handleMoveUser} className="mt-6 space-y-4">
+                            <div className="rounded-lg border border-gray-700 bg-gray-900/50 px-4 py-3 text-sm text-gray-300">
+                                <div className="flex justify-between gap-4">
+                                    <span className="text-gray-500">Current Node</span>
+                                    <span className="text-right">
+                                        <span className="block text-white">{userToMove.nodeName || userToMove.nodeId}</span>
+                                        <span className="block font-mono text-xs text-gray-500">{userToMove.nodePublicIp || 'Unknown IP'}</span>
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-300 mb-2">Destination Node</label>
+                                <select
+                                    value={destinationNodeId}
+                                    onChange={(e) => setDestinationNodeId(e.target.value)}
+                                    disabled={moveTargetOptions.length === 0 || isMovingUser}
+                                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-60 disabled:cursor-not-allowed"
+                                >
+                                    {moveTargetOptions.length === 0 ? (
+                                        <option value="">No other active nodes available</option>
+                                    ) : (
+                                        moveTargetOptions.map((node) => (
+                                            <option key={node.id} value={node.id}>
+                                                {node.name} ({node.publicIp})
+                                            </option>
+                                        ))
+                                    )}
+                                </select>
+                            </div>
+
+                            <div className="flex justify-end space-x-3 pt-3">
+                                <button
+                                    type="button"
+                                    onClick={() => setUserToMove(null)}
+                                    className="px-4 py-2 text-gray-400 hover:text-white transition"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={isMovingUser || moveTargetOptions.length === 0 || !destinationNodeId}
+                                    className="bg-amber-500 hover:bg-amber-400 text-gray-950 px-6 py-2 rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {isMovingUser ? 'Moving...' : 'Move User'}
                                 </button>
                             </div>
                         </form>

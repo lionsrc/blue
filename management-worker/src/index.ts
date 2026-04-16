@@ -14,7 +14,7 @@ app.use('/*', cors({
 		const allowedOrigins = getAllowedCorsOrigins(c);
 		return allowedOrigins.has(origin) ? origin : '';
 	},
-	allowHeaders: ['Content-Type', 'Authorization', 'X-Node-IP', 'X-Agent-Secret', 'X-Health-Check', 'X-Usage-Secret'],
+		allowHeaders: ['Content-Type', 'Authorization', 'X-Node-IP', 'X-Node-Id', 'X-Agent-Secret', 'X-Agent-Token', 'X-Health-Check', 'X-Usage-Secret'],
 	allowMethods: ['POST', 'GET', 'OPTIONS', 'PUT', 'DELETE'],
 	credentials: true,
 }));

@@ -37,13 +37,16 @@ CREATE TABLE IF NOT EXISTS Payments (
 CREATE TABLE IF NOT EXISTS Nodes (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    publicIp TEXT NOT NULL UNIQUE,
+    publicIp TEXT NOT NULL,
     status TEXT DEFAULT 'provisioning', -- 'provisioning', 'active', 'offline', 'blocked'
     activeConnections INTEGER DEFAULT 0, -- Track load balancing
     cpuLoad REAL DEFAULT 0.0,
     lastPing DATETIME,
-    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    agentTokenHash TEXT,
+    ipUpdatedAt DATETIME
 );
+CREATE INDEX IF NOT EXISTS idx_nodes_public_ip ON Nodes(publicIp);
 
 -- Create Domains Table (for active WebSocket routes)
 CREATE TABLE IF NOT EXISTS Domains (
@@ -67,3 +70,13 @@ CREATE TABLE IF NOT EXISTS UserAllocations (
     FOREIGN KEY(nodeId) REFERENCES Nodes(id),
     UNIQUE(nodeId, port) -- Ensure no port conflicts on a single node
 );
+
+CREATE TABLE IF NOT EXISTS NodeIpHistory (
+    id TEXT PRIMARY KEY,
+    nodeId TEXT NOT NULL,
+    previousIp TEXT,
+    newIp TEXT NOT NULL,
+    changedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(nodeId) REFERENCES Nodes(id)
+);
+CREATE INDEX IF NOT EXISTS idx_node_ip_history_node ON NodeIpHistory(nodeId, changedAt DESC);

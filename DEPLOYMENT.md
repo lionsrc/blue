@@ -136,20 +136,21 @@ The provided [`/Users/liondad/dev/blue/cloudflare/wrangler.toml`](/Users/liondad
 
 Build settings for [`/Users/liondad/dev/blue/user-web-app`](/Users/liondad/dev/blue/user-web-app):
 
-- Build command: `npm run build`
+- Build command: `VITE_API_URL=https://api.blue2000.cc npm run build`
 - Output directory: `dist`
-- Environment variable: `VITE_API_URL=https://api.blue2000.cc`
+- SPA routing: set `assets.not_found_handling = "single-page-application"` in [`/Users/liondad/dev/blue/user-web-app/wrangler.toml`](/Users/liondad/dev/blue/user-web-app/wrangler.toml) so browser refreshes on `/dashboard` and other client routes serve `index.html`
 
-Recommended deployment path:
+Deploy it as the Worker Assets app `blue-user-portal`.
 
-1. Create a new Cloudflare Pages project.
-   Use the project name `blue-user-portal`.
-2. Point it at [`/Users/liondad/dev/blue/user-web-app`](/Users/liondad/dev/blue/user-web-app) (Git integration or direct upload).
-3. Set the build command and output directory above.
-4. Add the custom domain `blue2000.cc`.
-5. Optionally add `www.blue2000.cc` and redirect it to the apex.
+The checked-in [`/Users/liondad/dev/blue/user-web-app/wrangler.toml`](/Users/liondad/dev/blue/user-web-app/wrangler.toml) is the source of truth for the worker name. Build with the production API URL, then deploy with Wrangler:
 
-The app uses client-side routing. Cloudflare Pages' default SPA fallback behavior is sufficient here as long as you do not add a top-level `404.html`.
+```bash
+cd /Users/liondad/dev/blue/user-web-app
+VITE_API_URL=https://api.blue2000.cc npm run build
+wrangler deploy
+```
+
+`blue2000.cc` is already attached to that worker in Cloudflare, so you should deploy to the existing worker rather than create a separate Pages project.
 
 ## 7. Deploy The Admin Portal (`admin.blue2000.cc`)
 
@@ -184,20 +185,22 @@ Important: the current worker validates exactly one Access audience. If you prot
 
 On the VPS that will run Xray:
 
-1. Register the node in the admin portal, or insert it through the API.
-2. Run the bootstrap script with the same `AGENT_SECRET` configured on the management worker.
+1. Register the node in the admin portal and copy the one-time `nodeId` and `agentToken`.
+2. Run the bootstrap script with the node-specific credentials from step 1. Include `AGENT_SECRET` only if you still want the transitional shared-secret fallback enabled on that node.
 
 Example:
 
 ```bash
 AGENT_SECRET='YOUR_AGENT_SECRET' \
+NODE_ID='YOUR_NODE_ID' \
+AGENT_TOKEN='YOUR_AGENT_TOKEN' \
 WORKER_URL='https://api.blue2000.cc' \
 ./scripts/setup_proxy_node.sh
 ```
 
 If public IP auto-detection is unreliable on that VPS, also provide `NODE_IP`.
 
-When the script succeeds, the node agent should begin polling `/api/agent/config`, the node should move to `active`, and the proxy worker should be able to forward WebSocket traffic to it.
+When the script succeeds, it writes `/etc/superproxy/agent.env`, keeps a compatibility symlink at `/etc/superproxy/node-agent.env`, and starts the polling service. The node agent should begin polling `/api/agent/config`, the node should move to `active`, and the proxy worker should be able to forward WebSocket traffic to it.
 
 ## 9. First Smoke Test
 
@@ -231,7 +234,8 @@ User portal:
 
 ```bash
 cd /Users/liondad/dev/blue/user-web-app
-npm run build
+VITE_API_URL=https://api.blue2000.cc npm run build
+wrangler deploy
 ```
 
 Admin portal:

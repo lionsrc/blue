@@ -1,9 +1,12 @@
 import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
 import type { Bindings } from '../types.js';
-import { authenticateAdmin, getAllowedCorsOrigins } from '../auth.js';
+import { authenticateAdmin, getAllowedCorsOrigins, hashPassword } from '../auth.js';
+import { findAvailableAllocationPort } from '../allocations.js';
 
 const admin = new Hono<{ Bindings: Bindings }>();
+
+const createAgentToken = () => `${crypto.randomUUID()}${crypto.randomUUID()}`;
 
 const resolveAllowedReturnTo = (c: any) => {
     const returnTo = c.req.query('returnTo');
@@ -47,7 +50,7 @@ admin.get('/api/admin/users', authenticateAdmin, async (c: any) => {
     const search = c.req.query('search') || '';
     const tier = c.req.query('tier') || 'all';
 
-    let baseQuery = `FROM Users u LEFT JOIN UserAllocations a ON u.id = a.userId`;
+    let baseQuery = `FROM Users u LEFT JOIN UserAllocations a ON u.id = a.userId LEFT JOIN Nodes n ON a.nodeId = n.id`;
     const conditions: string[] = [];
     const params: any[] = [];
 
@@ -74,7 +77,7 @@ admin.get('/api/admin/users', authenticateAdmin, async (c: any) => {
     const dataQuery = `
         SELECT u.id, u.email, u.tier, u.subscriptionPlan, u.bandwidthLimitMbps, u.creditBalance, u.isActive, u.createdAt,
                u.totalBytesUsed, u.lastConnectTime, u.lastConnectIp, u.lastClientSoftware,
-               a.nodeId, a.port
+               a.nodeId, a.port, n.name AS nodeName, n.publicIp AS nodePublicIp
         ${baseQuery}
         ORDER BY u.createdAt DESC
         LIMIT ? OFFSET ?
@@ -88,6 +91,106 @@ admin.get('/api/admin/users', authenticateAdmin, async (c: any) => {
         page,
         limit,
         totalPages: Math.ceil(total / limit)
+    });
+});
+
+admin.post('/api/admin/users/:id/move', authenticateAdmin, async (c: any) => {
+    const userId = c.req.param('id');
+    let nodeId: string | undefined;
+
+    try {
+        ({ nodeId } = JSON.parse(await c.req.text() || '{}'));
+    } catch {
+        return c.json({ error: 'Invalid JSON payload format' }, 400);
+    }
+
+    if (!nodeId) {
+        return c.json({ error: 'Destination node required' }, 400);
+    }
+
+    const user = await c.env.DB.prepare(`SELECT id, email FROM Users WHERE id = ?`).bind(userId).first() as { id: string; email: string } | null;
+    if (!user) {
+        return c.json({ error: 'User not found' }, 404);
+    }
+
+    const currentAllocation = await c.env.DB.prepare(
+        `SELECT a.id, a.nodeId, a.xrayUuid, a.port, a.speedLimitMbps,
+                n.name AS currentNodeName, n.publicIp AS currentNodePublicIp
+         FROM UserAllocations a
+         JOIN Nodes n ON a.nodeId = n.id
+         WHERE a.userId = ?
+         LIMIT 1`
+    ).bind(userId).first() as {
+        id: string;
+        nodeId: string;
+        xrayUuid: string;
+        port: number;
+        speedLimitMbps: number;
+        currentNodeName: string;
+        currentNodePublicIp: string;
+    } | null;
+
+    if (!currentAllocation) {
+        return c.json({ error: 'User has no active node allocation' }, 400);
+    }
+
+    if (currentAllocation.nodeId === nodeId) {
+        return c.json({ error: 'User is already assigned to that node' }, 400);
+    }
+
+    const destinationNode = await c.env.DB.prepare(
+        `SELECT id, name, publicIp, status FROM Nodes WHERE id = ?`
+    ).bind(nodeId).first() as {
+        id: string;
+        name: string;
+        publicIp: string;
+        status: string;
+    } | null;
+
+    if (!destinationNode) {
+        return c.json({ error: 'Destination node not found' }, 404);
+    }
+
+    if (destinationNode.status !== 'active') {
+        return c.json({ error: 'Destination node must be active before reassignment' }, 400);
+    }
+
+    const nextPort = await findAvailableAllocationPort(c.env.DB, destinationNode.id);
+    if (nextPort === null) {
+        return c.json({ error: 'No available ports on the destination node.' }, 503);
+    }
+
+    await c.env.DB.batch([
+        c.env.DB.prepare(
+            `UPDATE UserAllocations SET nodeId = ?, port = ? WHERE id = ?`
+        ).bind(destinationNode.id, nextPort, currentAllocation.id),
+        c.env.DB.prepare(
+            `UPDATE Nodes
+             SET activeConnections = CASE
+                 WHEN activeConnections > 0 THEN activeConnections - 1
+                 ELSE 0
+             END
+             WHERE id = ?`
+        ).bind(currentAllocation.nodeId),
+        c.env.DB.prepare(
+            `UPDATE Nodes SET activeConnections = activeConnections + 1 WHERE id = ?`
+        ).bind(destinationNode.id),
+    ]);
+
+    return c.json({
+        message: `User ${user.email} moved to ${destinationNode.name}`,
+        allocation: {
+            userId,
+            nodeId: destinationNode.id,
+            nodeName: destinationNode.name,
+            nodePublicIp: destinationNode.publicIp,
+            port: nextPort,
+            xrayUuid: currentAllocation.xrayUuid,
+            speedLimitMbps: currentAllocation.speedLimitMbps,
+            previousNodeId: currentAllocation.nodeId,
+            previousNodeName: currentAllocation.currentNodeName,
+            previousNodePublicIp: currentAllocation.currentNodePublicIp,
+        },
     });
 });
 
@@ -121,12 +224,14 @@ admin.post('/api/admin/users/:id/block', authenticateAdmin, async (c: any) => {
 
 admin.get('/api/admin/nodes', authenticateAdmin, async (c: any) => {
     const { results: nodes } = await c.env.DB.prepare(
-        `SELECT n.id, n.name, n.publicIp, n.status, n.activeConnections, n.cpuLoad, n.lastPing, 
-		        COUNT(a.id) as allocationCount
-		 FROM Nodes n
-		 LEFT JOIN UserAllocations a ON n.id = a.nodeId
-		 GROUP BY n.id
-		 ORDER BY n.createdAt DESC`
+        `SELECT n.id, n.name, n.publicIp, n.status, n.activeConnections, n.cpuLoad, n.lastPing,
+                n.ipUpdatedAt,
+                CASE WHEN n.agentTokenHash IS NOT NULL THEN 1 ELSE 0 END AS agentTokenConfigured,
+			        COUNT(a.id) as allocationCount
+			 FROM Nodes n
+			 LEFT JOIN UserAllocations a ON n.id = a.nodeId
+			 GROUP BY n.id
+			 ORDER BY n.createdAt DESC`
     ).all();
 
     return c.json({ nodes });
@@ -144,15 +249,73 @@ admin.post('/api/admin/nodes', authenticateAdmin, async (c: any) => {
     if (!name || !publicIp) return c.json({ error: "Name and Public IP required" }, 400);
 
     const nodeId = uuidv4();
+    const agentToken = createAgentToken();
+    const agentTokenHash = await hashPassword(agentToken);
     try {
         await c.env.DB.prepare(
-            `INSERT INTO Nodes (id, name, publicIp, status) VALUES (?, ?, ?, 'provisioning')`
-        ).bind(nodeId, name, publicIp).run();
+            `INSERT INTO Nodes (id, name, publicIp, status, agentTokenHash) VALUES (?, ?, ?, 'provisioning', ?)`
+        ).bind(nodeId, name, publicIp, agentTokenHash).run();
 
-        return c.json({ message: "Node registered successfully", nodeId, status: 'provisioning' });
+        return c.json({
+            message: "Node registered successfully",
+            nodeId,
+            agentToken,
+            status: 'provisioning',
+        });
     } catch (error) {
-        return c.json({ error: "Node IP already exists or database error" }, 500);
+        return c.json({ error: "Failed to register node" }, 500);
     }
+});
+
+admin.post('/api/admin/nodes/:id/rotate-token', authenticateAdmin, async (c: any) => {
+    const nodeId = c.req.param('id');
+    const existingNode = await c.env.DB.prepare(
+        `SELECT id, name FROM Nodes WHERE id = ?`
+    ).bind(nodeId).first() as { id: string; name: string } | null;
+
+    if (!existingNode) {
+        return c.json({ error: 'Node not found' }, 404);
+    }
+
+    const agentToken = createAgentToken();
+    const agentTokenHash = await hashPassword(agentToken);
+
+    await c.env.DB.prepare(
+        `UPDATE Nodes SET agentTokenHash = ? WHERE id = ?`
+    ).bind(agentTokenHash, nodeId).run();
+
+    return c.json({
+        message: `Agent token issued for ${existingNode.name}`,
+        nodeId,
+        agentToken,
+    });
+});
+
+admin.get('/api/admin/nodes/:id/ip-history', authenticateAdmin, async (c: any) => {
+    const nodeId = c.req.param('id');
+    const limit = Math.max(1, Math.min(100, parseInt(c.req.query('limit') || '20', 10)));
+
+    const existingNode = await c.env.DB.prepare(
+        `SELECT id, name FROM Nodes WHERE id = ?`
+    ).bind(nodeId).first() as { id: string; name: string } | null;
+
+    if (!existingNode) {
+        return c.json({ error: 'Node not found' }, 404);
+    }
+
+    const { results: history } = await c.env.DB.prepare(
+        `SELECT id, previousIp, newIp, changedAt
+         FROM NodeIpHistory
+         WHERE nodeId = ?
+         ORDER BY changedAt DESC
+         LIMIT ?`
+    ).bind(nodeId, limit).all();
+
+    return c.json({
+        nodeId,
+        nodeName: existingNode.name,
+        history,
+    });
 });
 
 export default admin;

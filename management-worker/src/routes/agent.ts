@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Bindings } from '../types.js';
-import { requireSecret, readAgentSyncPayload } from '../auth.js';
+import { requireSecret, readAgentSyncPayload, verifyPassword } from '../auth.js';
 import {
     resolvePlanId, getPlanDefinition, getCurrentPeriodBytesUsed,
     isQuotaExceeded, normalizeUsageBytes, getUsagePeriodStart,
@@ -11,34 +11,83 @@ const agent = new Hono<{ Bindings: Bindings }>();
 
 // --- Node Polling Agent API ---
 const handleAgentConfigSync = async (c: any) => {
-    const nodeIp = c.req.header('X-Node-IP');
+    const nodeId = c.req.header('X-Node-Id')?.trim();
+    const agentToken = c.req.header('X-Agent-Token')?.trim();
+    const nodeIp = c.req.header('X-Node-IP')?.trim();
     const agentSecret = c.req.header('X-Agent-Secret');
 
-    try {
-        if (agentSecret !== requireSecret(c, 'AGENT_SECRET')) {
+    let node = null as { id: string; publicIp: string; agentTokenHash?: string | null } | null;
+
+    if (nodeId || agentToken) {
+        if (!nodeId || !agentToken) {
+            return c.json({ error: 'Missing agent credentials' }, 401);
+        }
+
+        node = await c.env.DB.prepare(
+            `SELECT id, publicIp, agentTokenHash FROM Nodes WHERE id = ?`
+        ).bind(nodeId).first();
+
+        if (!node || !node.agentTokenHash) {
             return c.json({ error: 'Unauthorized agent' }, 401);
         }
-    } catch (err) {
-        if (err instanceof Error && err.message.startsWith('Missing required secret:')) {
-            return c.json({ error: err.message }, 500);
+
+        const isTokenValid = await verifyPassword(agentToken, node.agentTokenHash);
+        if (!isTokenValid) {
+            return c.json({ error: 'Unauthorized agent' }, 401);
         }
-        throw err;
+    } else if (nodeIp) {
+        try {
+            if (agentSecret !== requireSecret(c, 'AGENT_SECRET')) {
+                return c.json({ error: 'Unauthorized agent' }, 401);
+            }
+        } catch (err) {
+            if (err instanceof Error && err.message.startsWith('Missing required secret:')) {
+                return c.json({ error: err.message }, 500);
+            }
+            throw err;
+        }
+
+        node = await c.env.DB.prepare(
+            `SELECT id, publicIp FROM Nodes WHERE publicIp = ? AND agentTokenHash IS NULL LIMIT 1`
+        ).bind(nodeIp).first();
+        if (!node) {
+            return c.json({ error: 'Node not found in registry' }, 404);
+        }
+    } else {
+        return c.json({ error: 'Missing agent credentials' }, 401);
     }
 
-    const node = await c.env.DB.prepare(`SELECT id FROM Nodes WHERE publicIp = ?`).bind(nodeIp).first();
-    if (!node) return c.json({ error: 'Node not found in registry' }, 404);
-
     const syncPayload = await readAgentSyncPayload(c);
+    const reportedIp = syncPayload.publicIp;
 
-    // Update ping and the latest health metrics we have for the node.
-    await c.env.DB.prepare(
-        `UPDATE Nodes
-		 SET lastPing = CURRENT_TIMESTAMP,
-		     cpuLoad = COALESCE(?, cpuLoad),
-		     activeConnections = COALESCE(?, activeConnections),
-		     status = 'active'
-		 WHERE id = ?`
-    ).bind(syncPayload.cpuLoad, syncPayload.activeConnections, node.id).run();
+    if (reportedIp && reportedIp !== node.publicIp) {
+        await c.env.DB.batch([
+            c.env.DB.prepare(
+                `INSERT INTO NodeIpHistory (id, nodeId, previousIp, newIp) VALUES (?, ?, ?, ?)`
+            ).bind(crypto.randomUUID(), node.id, node.publicIp, reportedIp),
+            c.env.DB.prepare(
+                `UPDATE Nodes
+                 SET publicIp = ?,
+                     ipUpdatedAt = CURRENT_TIMESTAMP,
+                     lastPing = CURRENT_TIMESTAMP,
+                     cpuLoad = COALESCE(?, cpuLoad),
+                     activeConnections = COALESCE(?, activeConnections),
+                     status = 'active'
+                 WHERE id = ?`
+            ).bind(reportedIp, syncPayload.cpuLoad, syncPayload.activeConnections, node.id),
+        ]);
+        node = { ...node, publicIp: reportedIp };
+    } else {
+        // Update ping and the latest health metrics we have for the node.
+        await c.env.DB.prepare(
+            `UPDATE Nodes
+			 SET lastPing = CURRENT_TIMESTAMP,
+			     cpuLoad = COALESCE(?, cpuLoad),
+			     activeConnections = COALESCE(?, activeConnections),
+			     status = 'active'
+			 WHERE id = ?`
+        ).bind(syncPayload.cpuLoad, syncPayload.activeConnections, node.id).run();
+    }
 
     // Fetch all user allocations for this node to construct the `tc` and Xray payload
     const { results: allocations } = await c.env.DB.prepare(

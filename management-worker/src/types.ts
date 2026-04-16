@@ -35,6 +35,7 @@ export type AccessJwtPayload = {
 export type AgentSyncPayload = {
     cpuLoad: number | null;
     activeConnections: number | null;
+    publicIp: string | null;
 };
 
 export type PlanId = 'free' | 'basic' | 'pro';

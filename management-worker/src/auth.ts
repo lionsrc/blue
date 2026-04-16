@@ -226,7 +226,7 @@ export const parseNumericValue = (value: unknown) => {
 
 export const readAgentSyncPayload = async (c: any): Promise<AgentSyncPayload> => {
     if (c.req.method !== 'POST') {
-        return { cpuLoad: null, activeConnections: null };
+        return { cpuLoad: null, activeConnections: null, publicIp: null };
     }
 
     try {
@@ -234,9 +234,12 @@ export const readAgentSyncPayload = async (c: any): Promise<AgentSyncPayload> =>
         return {
             cpuLoad: parseNumericValue(body.cpuLoad ?? body.load),
             activeConnections: parseNumericValue(body.activeConnections),
+            publicIp: typeof body.publicIp === 'string' && body.publicIp.trim()
+                ? body.publicIp.trim()
+                : null,
         };
     } catch {
-        return { cpuLoad: null, activeConnections: null };
+        return { cpuLoad: null, activeConnections: null, publicIp: null };
     }
 };
 

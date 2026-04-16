@@ -5,13 +5,84 @@
 
 set -euo pipefail
 
+load_env_file() {
+    local env_file="$1"
+
+    if [ -f "$env_file" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        . "$env_file"
+        set +a
+    fi
+}
+
+load_env_file "/etc/superproxy/node-agent.env"
+load_env_file "/etc/superproxy/agent.env"
+
 WORKER_URL=${WORKER_URL:-"https://api.blue2000.cc"}
-AGENT_SECRET=${AGENT_SECRET:?Set AGENT_SECRET before starting node_agent.sh}
+AGENT_SECRET=${AGENT_SECRET:-}
+NODE_ID=${NODE_ID:-}
+AGENT_TOKEN=${AGENT_TOKEN:-}
 NODE_IP=${NODE_IP:-}
 INTERFACE=${INTERFACE:-}
 API_ENDPOINT="$WORKER_URL/api/agent/config"
 XRAY_CONF="/usr/local/etc/xray/config.json"
 LIMIT_STATE_FILE="/etc/superproxy/node-limits.json"
+
+if [ -n "$NODE_ID" ] || [ -n "$AGENT_TOKEN" ]; then
+    if [ -z "$NODE_ID" ] || [ -z "$AGENT_TOKEN" ]; then
+        echo "Set both NODE_ID and AGENT_TOKEN for token-auth mode." >&2
+        exit 1
+    fi
+    AUTH_MODE="token"
+elif [ -n "$AGENT_SECRET" ]; then
+    AUTH_MODE="legacy"
+else
+    echo "Set AGENT_SECRET for legacy mode, or NODE_ID and AGENT_TOKEN for token-auth mode." >&2
+    exit 1
+fi
+
+detect_xray_service_user() {
+    local service_user
+    service_user=$(systemctl show -p User --value xray 2>/dev/null | tr -d '\r')
+
+    if [ -z "$service_user" ]; then
+        service_user="root"
+    fi
+
+    printf '%s\n' "$service_user"
+}
+
+detect_xray_service_group() {
+    local service_group
+    local service_user
+
+    service_group=$(systemctl show -p Group --value xray 2>/dev/null | tr -d '\r')
+    if [ -n "$service_group" ]; then
+        printf '%s\n' "$service_group"
+        return
+    fi
+
+    service_user=$(detect_xray_service_user)
+    if service_group=$(id -gn "$service_user" 2>/dev/null); then
+        printf '%s\n' "$service_group"
+        return
+    fi
+
+    printf '%s\n' "root"
+}
+
+fix_xray_config_permissions() {
+    local xray_user
+    local xray_group
+
+    xray_user=$(detect_xray_service_user)
+    xray_group=$(detect_xray_service_group)
+
+    chown "$xray_user:$xray_group" "$XRAY_CONF"
+    chmod 640 "$XRAY_CONF"
+    chmod 755 "$(dirname "$XRAY_CONF")"
+}
 
 detect_public_ip() {
     local detected_ip
@@ -66,6 +137,7 @@ apply_config() {
     fi
 
     mv "$tmp_conf" "$XRAY_CONF"
+    fix_xray_config_permissions
     systemctl reload xray || systemctl restart xray
     mkdir -p "$(dirname "$LIMIT_STATE_FILE")"
     echo "$node_config_json" | jq '.' > "$LIMIT_STATE_FILE"
@@ -75,6 +147,7 @@ apply_config() {
 }
 
 collect_payload() {
+    local public_ip="$1"
     local load_1m
     local active_conn
 
@@ -85,10 +158,9 @@ collect_payload() {
     jq -cn \
         --arg cpuLoad "$load_1m" \
         --arg activeConnections "$active_conn" \
-        '{cpuLoad: ($cpuLoad | tonumber? // null), activeConnections: ($activeConnections | tonumber? // 0)}'
+        --arg publicIp "$public_ip" \
+        '{cpuLoad: ($cpuLoad | tonumber? // null), activeConnections: ($activeConnections | tonumber? // 0), publicIp: $publicIp}'
 }
-
-NODE_IP=${NODE_IP:-$(detect_public_ip)}
 
 if [ -n "$INTERFACE" ] && ! ip link show "$INTERFACE" >/dev/null 2>&1; then
     echo "Configured interface $INTERFACE does not exist. Falling back to auto-detection." >&2
@@ -98,19 +170,53 @@ fi
 INTERFACE=${INTERFACE:-$(detect_primary_interface)}
 
 echo "Using Worker API: $API_ENDPOINT"
-echo "Reporting node public IP as: $NODE_IP"
+echo "Agent auth mode: $AUTH_MODE"
+if [ -n "$NODE_IP" ]; then
+    echo "Reporting node public IP from NODE_IP override: $NODE_IP"
+else
+    echo "Auto-detecting node public IP on each sync cycle"
+fi
 echo "Using network interface: $INTERFACE"
 
 setup_tc
 
 while true; do
-    echo "[$(date)] Syncing with Management Worker..."
+    if [ -n "$NODE_IP" ]; then
+        REPORTED_PUBLIC_IP="$NODE_IP"
+    elif ! REPORTED_PUBLIC_IP=$(detect_public_ip); then
+        echo "Public IP detection failed. Retrying on next interval." >&2
+        sleep 30
+        continue
+    fi
 
-    if ! RESPONSE=$(curl -sS -w "%{http_code}" -X POST "$API_ENDPOINT" \
-      -H "Content-Type: application/json" \
-      -H "X-Node-IP: $NODE_IP" \
-      -H "X-Agent-Secret: $AGENT_SECRET" \
-      -d "$(collect_payload)"); then
+    echo "[$(date)] Syncing with Management Worker..."
+    echo "Current reported public IP: $REPORTED_PUBLIC_IP"
+
+    curl_args=(
+      -sS
+      -w "%{http_code}"
+      -X POST "$API_ENDPOINT"
+      -H "Content-Type: application/json"
+      -d "$(collect_payload "$REPORTED_PUBLIC_IP")"
+    )
+
+    if [ "$AUTH_MODE" = "token" ]; then
+        curl_args+=(
+          -H "X-Node-Id: $NODE_ID"
+          -H "X-Agent-Token: $AGENT_TOKEN"
+        )
+
+        if [ -n "$AGENT_SECRET" ]; then
+            curl_args+=(-H "X-Agent-Secret: $AGENT_SECRET")
+        fi
+    else
+        curl_args+=(
+          -H "X-Node-IP: $REPORTED_PUBLIC_IP"
+          -H "X-Agent-Secret: $AGENT_SECRET"
+        )
+    fi
+
+    if ! RESPONSE=$(curl "${curl_args[@]}"); then
         echo "API sync request failed. Retrying on next interval." >&2
         sleep 30
         continue

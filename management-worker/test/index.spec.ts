@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import * as jwt from '@tsndr/cloudflare-worker-jwt';
 import worker from '../src';
-import { _resetRateLimitBucketsForTesting } from '../src/auth';
+import { _resetRateLimitBucketsForTesting, hashPassword } from '../src/auth';
 
 type UserRow = {
 	id: string;
@@ -28,6 +28,17 @@ type NodeRow = {
 	activeConnections: number;
 	cpuLoad: number;
 	lastPing: string | null;
+	agentTokenHash?: string | null;
+	ipUpdatedAt?: string | null;
+	createdAt?: string;
+};
+
+type NodeIpHistoryRow = {
+	id: string;
+	nodeId: string;
+	previousIp: string | null;
+	newIp: string;
+	changedAt: string;
 };
 
 type AllocationRow = {
@@ -93,6 +104,7 @@ class FakeD1Database {
 	nodes = new Map<string, NodeRow>();
 	allocations: AllocationRow[] = [];
 	payments: PaymentRow[] = [];
+	nodeIpHistory: NodeIpHistoryRow[] = [];
 
 	prepare(sql: string) {
 		return new FakeD1Statement(this, sql);
@@ -180,6 +192,29 @@ class FakeD1Database {
 			} as T;
 		}
 
+		if (sql.includes('SELECT id, publicIp, agentTokenHash FROM Nodes WHERE id = ?')) {
+			const node = this.nodes.get(String(args[0]));
+			if (!node) return null;
+			return {
+				id: node.id,
+				publicIp: node.publicIp,
+				agentTokenHash: node.agentTokenHash ?? null,
+			} as T;
+		}
+
+		if (sql.includes('SELECT id, publicIp FROM Nodes WHERE publicIp = ? AND agentTokenHash IS NULL LIMIT 1')) {
+			const publicIp = String(args[0]);
+			for (const node of this.nodes.values()) {
+				if (node.publicIp === publicIp && !node.agentTokenHash) {
+					return {
+						id: node.id,
+						publicIp: node.publicIp,
+					} as T;
+				}
+			}
+			return null;
+		}
+
 		if (sql.includes('SELECT id FROM Nodes WHERE publicIp = ?')) {
 			const publicIp = String(args[0]);
 			for (const node of this.nodes.values()) {
@@ -225,6 +260,48 @@ class FakeD1Database {
 			return { total: results.length } as T;
 		}
 
+		if (sql.includes('SELECT id, email FROM Users WHERE id = ?')) {
+			const user = this.users.get(String(args[0]));
+			if (!user) return null;
+			return {
+				id: user.id,
+				email: user.email,
+			} as T;
+		}
+
+		if (sql.includes('FROM UserAllocations a') && sql.includes('WHERE a.userId = ?') && sql.includes('currentNodeName')) {
+			const userId = String(args[0]);
+			const allocation = this.allocations.find((candidate) => candidate.userId === userId);
+			if (!allocation) return null;
+			const node = this.nodes.get(allocation.nodeId);
+			if (!node) throw new Error('Node not found');
+			return {
+				...allocation,
+				currentNodeName: node.name,
+				currentNodePublicIp: node.publicIp,
+			} as T;
+		}
+
+		if (sql.includes('SELECT id, name, publicIp, status FROM Nodes WHERE id = ?')) {
+			const node = this.nodes.get(String(args[0]));
+			if (!node) return null;
+			return {
+				id: node.id,
+				name: node.name,
+				publicIp: node.publicIp,
+				status: node.status,
+			} as T;
+		}
+
+		if (sql.includes('SELECT id, name FROM Nodes WHERE id = ?')) {
+			const node = this.nodes.get(String(args[0]));
+			if (!node) return null;
+			return {
+				id: node.id,
+				name: node.name,
+			} as T;
+		}
+
 		throw new Error(`Unhandled first() SQL: ${sql}`);
 	}
 
@@ -261,10 +338,60 @@ class FakeD1Database {
 			return { success: true };
 		}
 
-		if (sql.includes('UPDATE Nodes') && sql.includes('lastPing = CURRENT_TIMESTAMP')) {
-			const [cpuLoad, activeConnections, nodeId] = args as [number | null, number | null, string];
+		if (sql.includes('INSERT INTO Nodes')) {
+			const [id, name, publicIp, agentTokenHash] = args as [string, string, string, string?];
+			this.nodes.set(id, {
+				id,
+				name,
+				publicIp,
+				status: 'provisioning',
+				activeConnections: 0,
+				cpuLoad: 0,
+				lastPing: null,
+				agentTokenHash: agentTokenHash ?? null,
+				ipUpdatedAt: null,
+				createdAt: new Date().toISOString(),
+			});
+			return { success: true };
+		}
+
+		if (sql.includes('INSERT INTO NodeIpHistory')) {
+			const [id, nodeId, previousIp, newIp] = args as [string, string, string | null, string];
+			this.nodeIpHistory.push({
+				id,
+				nodeId,
+				previousIp,
+				newIp,
+				changedAt: new Date().toISOString(),
+			});
+			return { success: true };
+		}
+
+		if (sql.includes('UPDATE Nodes') && sql.includes('SET publicIp = ?')) {
+			const [publicIp, cpuLoad, activeConnections, nodeId] = args as [string, number | null, number | null, string];
 			const node = this.nodes.get(nodeId);
 			if (!node) throw new Error('Node not found');
+			node.publicIp = publicIp;
+			node.ipUpdatedAt = new Date().toISOString();
+			if (cpuLoad !== null) node.cpuLoad = cpuLoad;
+			if (activeConnections !== null) node.activeConnections = activeConnections;
+			node.status = 'active';
+			node.lastPing = new Date().toISOString();
+			return { success: true };
+		}
+
+			if (sql.includes('UPDATE Nodes SET agentTokenHash = ? WHERE id = ?')) {
+				const [agentTokenHash, nodeId] = args as [string, string];
+				const node = this.nodes.get(nodeId);
+				if (!node) throw new Error('Node not found');
+				node.agentTokenHash = agentTokenHash;
+				return { success: true };
+			}
+
+			if (sql.includes('UPDATE Nodes') && sql.includes('lastPing = CURRENT_TIMESTAMP')) {
+				const [cpuLoad, activeConnections, nodeId] = args as [number | null, number | null, string];
+				const node = this.nodes.get(nodeId);
+				if (!node) throw new Error('Node not found');
 			if (cpuLoad !== null) node.cpuLoad = cpuLoad;
 			if (activeConnections !== null) node.activeConnections = activeConnections;
 			node.status = 'active';
@@ -367,6 +494,30 @@ class FakeD1Database {
 			return { success: true };
 		}
 
+		if (sql.includes('UPDATE UserAllocations SET nodeId = ?, port = ? WHERE id = ?')) {
+			const [nodeId, port, allocationId] = args as [string, number, string];
+			this.allocations = this.allocations.map((allocation) => (
+				allocation.id === allocationId
+					? { ...allocation, nodeId, port }
+					: allocation
+			));
+			return { success: true };
+		}
+
+		if (sql.includes('UPDATE Nodes SET activeConnections = activeConnections + 1 WHERE id = ?')) {
+			const node = this.nodes.get(String(args[0]));
+			if (!node) throw new Error('Node not found');
+			node.activeConnections += 1;
+			return { success: true };
+		}
+
+		if (sql.includes('SET activeConnections = CASE') && sql.includes('WHERE id = ?')) {
+			const node = this.nodes.get(String(args[0]));
+			if (!node) throw new Error('Node not found');
+			node.activeConnections = Math.max(0, node.activeConnections - 1);
+			return { success: true };
+		}
+
 		throw new Error(`Unhandled run() SQL: ${sql}`);
 	}
 
@@ -413,18 +564,30 @@ class FakeD1Database {
 			} as { results: T[] };
 		}
 
-		if (sql.includes('FROM Payments WHERE userId = ?')) {
-			const userId = String(args[0]);
-			return {
-				results: this.payments
-					.filter((p) => p.userId === userId)
+			if (sql.includes('FROM Payments WHERE userId = ?')) {
+				const userId = String(args[0]);
+				return {
+					results: this.payments
+						.filter((p) => p.userId === userId)
 					.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-			} as { results: T[] };
-		}
+				} as { results: T[] };
+			}
 
-		if (sql.includes('SELECT u.id, u.email, u.tier, u.subscriptionPlan, u.bandwidthLimitMbps')) {
-			const limit = Number(args[args.length - 2]);
-			const offset = Number(args[args.length - 1]);
+			if (sql.includes('FROM NodeIpHistory')) {
+				const nodeId = String(args[0]);
+				const limit = Number(args[1]);
+				return {
+					results: this.nodeIpHistory
+						.filter((entry) => entry.nodeId === nodeId)
+						.sort((left, right) => right.changedAt.localeCompare(left.changedAt))
+						.slice(0, limit)
+						.map((entry) => ({ ...entry })),
+				} as { results: T[] };
+			}
+
+			if (sql.includes('SELECT u.id, u.email, u.tier, u.subscriptionPlan, u.bandwidthLimitMbps')) {
+				const limit = Number(args[args.length - 2]);
+				const offset = Number(args[args.length - 1]);
 			let results = Array.from(this.users.values());
 
 			if (sql.includes('u.email LIKE ?')) {
@@ -439,12 +602,44 @@ class FakeD1Database {
 
 			results = results.slice(offset, offset + limit);
 
-			return { results: results.map((r) => ({ ...r, createdAt: new Date().toISOString() })) } as { results: T[] };
-		}
+			return {
+				results: results.map((user) => {
+					const allocation = this.allocations.find((candidate) => candidate.userId === user.id) ?? null;
+					const node = allocation ? this.nodes.get(allocation.nodeId) ?? null : null;
+					return {
+						...user,
+						createdAt: new Date().toISOString(),
+						nodeId: allocation?.nodeId ?? null,
+						port: allocation?.port ?? null,
+						nodeName: node?.name ?? null,
+						nodePublicIp: node?.publicIp ?? null,
+					};
+				}),
+				} as { results: T[] };
+			}
 
-		throw new Error(`Unhandled all() SQL: ${sql}`);
+			if (sql.includes('FROM Nodes n') && sql.includes('allocationCount')) {
+				const results = Array.from(this.nodes.values())
+					.sort((left, right) => (right.createdAt ?? '').localeCompare(left.createdAt ?? ''))
+					.map((node) => ({
+						id: node.id,
+						name: node.name,
+						publicIp: node.publicIp,
+						status: node.status,
+						activeConnections: node.activeConnections,
+						cpuLoad: node.cpuLoad,
+						lastPing: node.lastPing,
+						ipUpdatedAt: node.ipUpdatedAt ?? null,
+						agentTokenConfigured: node.agentTokenHash ? 1 : 0,
+						allocationCount: this.allocations.filter((allocation) => allocation.nodeId === node.id).length,
+					}));
+
+				return { results } as { results: T[] };
+			}
+
+			throw new Error(`Unhandled all() SQL: ${sql}`);
+		}
 	}
-}
 
 const createExecutionContext = () => ({
 	waitUntil: () => undefined,
@@ -647,9 +842,9 @@ describe('management worker API', () => {
 		expect(Math.abs((payload.exp as number) - expectedExp)).toBeLessThan(60);
 	});
 
-	it('syncs node config and stores posted health metrics', async () => {
-		env.DB.nodes.set('node-1', {
-			id: 'node-1',
+		it('syncs node config and stores posted health metrics', async () => {
+			env.DB.nodes.set('node-1', {
+				id: 'node-1',
 			name: 'node-1',
 			publicIp: '198.51.100.10',
 			status: 'provisioning',
@@ -710,12 +905,190 @@ describe('management worker API', () => {
 			}),
 		]);
 
-		const node = env.DB.nodes.get('node-1');
-		expect(node?.status).toBe('active');
-		expect(node?.cpuLoad).toBe(1.75);
-		expect(node?.activeConnections).toBe(9);
-		expect(node?.lastPing).toBeTruthy();
-	});
+			const node = env.DB.nodes.get('node-1');
+			expect(node?.status).toBe('active');
+			expect(node?.cpuLoad).toBe(1.75);
+			expect(node?.activeConnections).toBe(9);
+			expect(node?.lastPing).toBeTruthy();
+		});
+
+		it('authenticates tokenized nodes by node id without requiring X-Agent-Secret', async () => {
+			const agentToken = 'stable-agent-token';
+			env.DB.nodes.set('node-stable', {
+				id: 'node-stable',
+				name: 'stable-node',
+				publicIp: '198.51.100.20',
+				status: 'provisioning',
+				activeConnections: 0,
+				cpuLoad: 0,
+				lastPing: null,
+				agentTokenHash: await hashPassword(agentToken),
+				ipUpdatedAt: null,
+			});
+
+			const response = await worker.fetch(
+				new Request('http://example.com/api/agent/config', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'X-Node-Id': 'node-stable',
+						'X-Agent-Token': agentToken,
+					},
+					body: JSON.stringify({
+						cpuLoad: 2.25,
+						activeConnections: 4,
+						publicIp: '203.0.113.44',
+					}),
+				}),
+				env as never,
+				createExecutionContext(),
+			);
+
+			expect(response.status).toBe(200);
+			expect(env.DB.nodes.get('node-stable')).toEqual(expect.objectContaining({
+				publicIp: '203.0.113.44',
+				status: 'active',
+				cpuLoad: 2.25,
+				activeConnections: 4,
+			}));
+			expect(env.DB.nodes.get('node-stable')?.ipUpdatedAt).toBeTruthy();
+			expect(env.DB.nodeIpHistory).toHaveLength(1);
+			expect(env.DB.nodeIpHistory[0]).toEqual(expect.objectContaining({
+				nodeId: 'node-stable',
+				previousIp: '198.51.100.20',
+				newIp: '203.0.113.44',
+			}));
+		});
+
+		it('does not add IP history when a tokenized node reports the same IP', async () => {
+			const agentToken = 'same-ip-token';
+			env.DB.nodes.set('node-stable', {
+				id: 'node-stable',
+				name: 'stable-node',
+				publicIp: '198.51.100.20',
+				status: 'provisioning',
+				activeConnections: 0,
+				cpuLoad: 0,
+				lastPing: null,
+				agentTokenHash: await hashPassword(agentToken),
+				ipUpdatedAt: null,
+			});
+
+			const response = await worker.fetch(
+				new Request('http://example.com/api/agent/config', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'X-Node-Id': 'node-stable',
+						'X-Agent-Token': agentToken,
+						'X-Agent-Secret': env.AGENT_SECRET,
+					},
+					body: JSON.stringify({
+						cpuLoad: 0.75,
+						activeConnections: 2,
+						publicIp: '198.51.100.20',
+					}),
+				}),
+				env as never,
+				createExecutionContext(),
+			);
+
+			expect(response.status).toBe(200);
+			expect(env.DB.nodeIpHistory).toHaveLength(0);
+			expect(env.DB.nodes.get('node-stable')?.publicIp).toBe('198.51.100.20');
+		});
+
+		it('rejects tokenized nodes with the wrong token', async () => {
+			env.DB.nodes.set('node-stable', {
+				id: 'node-stable',
+				name: 'stable-node',
+				publicIp: '198.51.100.20',
+				status: 'provisioning',
+				activeConnections: 0,
+				cpuLoad: 0,
+				lastPing: null,
+				agentTokenHash: await hashPassword('correct-token'),
+				ipUpdatedAt: null,
+			});
+
+			const response = await worker.fetch(
+				new Request('http://example.com/api/agent/config', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'X-Node-Id': 'node-stable',
+						'X-Agent-Token': 'wrong-token',
+						'X-Agent-Secret': env.AGENT_SECRET,
+					},
+					body: JSON.stringify({ publicIp: '198.51.100.20' }),
+				}),
+				env as never,
+				createExecutionContext(),
+			);
+
+			expect(response.status).toBe(401);
+			expect(env.DB.nodeIpHistory).toHaveLength(0);
+			expect(env.DB.nodes.get('node-stable')?.lastPing).toBeNull();
+		});
+
+		it('allows multiple tokenized nodes to report the same public IP', async () => {
+			env.DB.nodes.set('node-a', {
+				id: 'node-a',
+				name: 'node-a',
+				publicIp: '203.0.113.50',
+				status: 'provisioning',
+				activeConnections: 0,
+				cpuLoad: 0,
+				lastPing: null,
+				agentTokenHash: await hashPassword('token-a'),
+				ipUpdatedAt: null,
+			});
+			env.DB.nodes.set('node-b', {
+				id: 'node-b',
+				name: 'node-b',
+				publicIp: '203.0.113.50',
+				status: 'provisioning',
+				activeConnections: 0,
+				cpuLoad: 0,
+				lastPing: null,
+				agentTokenHash: await hashPassword('token-b'),
+				ipUpdatedAt: null,
+			});
+
+			const [responseA, responseB] = await Promise.all([
+				worker.fetch(
+					new Request('http://example.com/api/agent/config', {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'X-Node-Id': 'node-a',
+							'X-Agent-Token': 'token-a',
+							'X-Agent-Secret': env.AGENT_SECRET,
+						},
+						body: JSON.stringify({ publicIp: '203.0.113.50' }),
+					}),
+					env as never,
+					createExecutionContext(),
+				),
+				worker.fetch(
+					new Request('http://example.com/api/agent/config', {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'X-Node-Id': 'node-b',
+							'X-Agent-Token': 'token-b',
+							'X-Agent-Secret': env.AGENT_SECRET,
+						},
+						body: JSON.stringify({ publicIp: '203.0.113.50' }),
+					}),
+					env as never,
+					createExecutionContext(),
+				),
+			]);
+
+			expect(responseA.status).toBe(200);
+			expect(responseB.status).toBe(200);
+		});
 
 	it('applies payments to the authenticated user instead of a body-supplied userId', async () => {
 		env.DB.users.set('user-a', {
@@ -888,6 +1261,296 @@ describe('management worker API', () => {
 			expect(await response.json()).toEqual({
 				error: 'Invalid returnTo URL',
 			});
+		});
+
+			it('returns a one-time agent token when an admin registers a node', async () => {
+				env.CF_ACCESS_AUD = '';
+
+				const response = await worker.fetch(
+					new Request('http://example.com/api/admin/nodes', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ name: 'Seoul 1', publicIp: '203.0.113.30' }),
+					}),
+					env as never,
+					createExecutionContext(),
+				);
+
+				expect(response.status).toBe(200);
+				const data = await response.json() as { nodeId: string; agentToken: string };
+				expect(data.nodeId).toBeTruthy();
+				expect(data.agentToken).toBeTruthy();
+				expect(env.DB.nodes.get(data.nodeId)?.agentTokenHash).toMatch(/^pbkdf2:/);
+
+				const listResponse = await worker.fetch(
+					new Request('http://example.com/api/admin/nodes'),
+					env as never,
+					createExecutionContext(),
+				);
+				expect(listResponse.status).toBe(200);
+				expect(JSON.stringify(await listResponse.json())).not.toContain(data.agentToken);
+			});
+
+			it('rotates node tokens and rejects the old token afterwards', async () => {
+				env.CF_ACCESS_AUD = '';
+				env.DB.nodes.set('node-rotate', {
+					id: 'node-rotate',
+					name: 'Rotate Me',
+					publicIp: '203.0.113.61',
+					status: 'provisioning',
+					activeConnections: 0,
+					cpuLoad: 0,
+					lastPing: null,
+					agentTokenHash: await hashPassword('old-token'),
+					ipUpdatedAt: null,
+				});
+
+				const rotateResponse = await worker.fetch(
+					new Request('http://example.com/api/admin/nodes/node-rotate/rotate-token', {
+						method: 'POST',
+					}),
+					env as never,
+					createExecutionContext(),
+				);
+
+				expect(rotateResponse.status).toBe(200);
+				const rotateData = await rotateResponse.json() as { agentToken: string };
+				expect(rotateData.agentToken).toBeTruthy();
+				expect(rotateData.agentToken).not.toBe('old-token');
+
+				const oldTokenResponse = await worker.fetch(
+					new Request('http://example.com/api/agent/config', {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'X-Node-Id': 'node-rotate',
+							'X-Agent-Token': 'old-token',
+							'X-Agent-Secret': env.AGENT_SECRET,
+						},
+						body: JSON.stringify({ publicIp: '203.0.113.61' }),
+					}),
+					env as never,
+					createExecutionContext(),
+				);
+				expect(oldTokenResponse.status).toBe(401);
+
+				const newTokenResponse = await worker.fetch(
+					new Request('http://example.com/api/agent/config', {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'X-Node-Id': 'node-rotate',
+							'X-Agent-Token': rotateData.agentToken,
+							'X-Agent-Secret': env.AGENT_SECRET,
+						},
+						body: JSON.stringify({ publicIp: '203.0.113.61' }),
+					}),
+					env as never,
+					createExecutionContext(),
+				);
+				expect(newTokenResponse.status).toBe(200);
+			});
+
+			it('returns node IP history for admins', async () => {
+				env.CF_ACCESS_AUD = '';
+				env.DB.nodes.set('node-history', {
+					id: 'node-history',
+					name: 'History Node',
+					publicIp: '203.0.113.71',
+					status: 'active',
+					activeConnections: 0,
+					cpuLoad: 0,
+					lastPing: new Date().toISOString(),
+					agentTokenHash: await hashPassword('history-token'),
+					ipUpdatedAt: new Date().toISOString(),
+				});
+				env.DB.nodeIpHistory.push(
+					{
+						id: 'hist-older',
+						nodeId: 'node-history',
+						previousIp: '198.51.100.1',
+						newIp: '198.51.100.2',
+						changedAt: '2026-01-01T00:00:00.000Z',
+					},
+					{
+						id: 'hist-newer',
+						nodeId: 'node-history',
+						previousIp: '198.51.100.2',
+						newIp: '203.0.113.71',
+						changedAt: '2026-02-01T00:00:00.000Z',
+					},
+				);
+
+				const response = await worker.fetch(
+					new Request('http://example.com/api/admin/nodes/node-history/ip-history?limit=1'),
+					env as never,
+					createExecutionContext(),
+				);
+
+				expect(response.status).toBe(200);
+				expect(await response.json()).toEqual({
+					nodeId: 'node-history',
+					nodeName: 'History Node',
+					history: [
+						expect.objectContaining({
+							id: 'hist-newer',
+							previousIp: '198.51.100.2',
+							newIp: '203.0.113.71',
+						}),
+					],
+				});
+			});
+
+			it('moves a user allocation to another active node and preserves the UUID', async () => {
+				env.CF_ACCESS_AUD = '';
+				env.DB.nodes.set('node-a', {
+				id: 'node-a',
+				name: 'Tokyo 1',
+				publicIp: '203.0.113.10',
+				status: 'active',
+				activeConnections: 4,
+				cpuLoad: 0,
+				lastPing: new Date().toISOString(),
+			});
+			env.DB.nodes.set('node-b', {
+				id: 'node-b',
+				name: 'Tokyo 2',
+				publicIp: '203.0.113.11',
+				status: 'active',
+				activeConnections: 1,
+				cpuLoad: 0,
+				lastPing: new Date().toISOString(),
+			});
+			env.DB.users.set('user-move', {
+				id: 'user-move',
+				email: 'move@example.com',
+				passwordHash: 'sha256:salt:hash',
+				tier: 'basic',
+				isActive: 1,
+				bandwidthLimitMbps: 300,
+				creditBalance: 0,
+				totalBytesUsed: 0,
+				currentUsagePeriodStart: null,
+				currentPeriodBytesUsed: 0,
+				subscriptionPlan: 'basic',
+				subscriptionEndDate: null,
+				emailVerified: 1,
+			});
+			env.DB.allocations.push({
+				id: 'alloc-user-move',
+				userId: 'user-move',
+				nodeId: 'node-a',
+				xrayUuid: 'uuid-move',
+				port: 12001,
+				speedLimitMbps: 300,
+			});
+			env.DB.allocations.push({
+				id: 'alloc-node-b-existing',
+				userId: 'someone-else',
+				nodeId: 'node-b',
+				xrayUuid: 'uuid-existing',
+				port: 10000,
+				speedLimitMbps: 100,
+			});
+
+			const response = await worker.fetch(
+				new Request('http://example.com/api/admin/users/user-move/move', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ nodeId: 'node-b' }),
+				}),
+				env as never,
+				createExecutionContext(),
+			);
+
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({
+				message: 'User move@example.com moved to Tokyo 2',
+				allocation: expect.objectContaining({
+					userId: 'user-move',
+					nodeId: 'node-b',
+					nodeName: 'Tokyo 2',
+					nodePublicIp: '203.0.113.11',
+					port: 10001,
+					xrayUuid: 'uuid-move',
+					speedLimitMbps: 300,
+					previousNodeId: 'node-a',
+					previousNodeName: 'Tokyo 1',
+					previousNodePublicIp: '203.0.113.10',
+				}),
+			});
+
+			expect(env.DB.allocations.find((allocation) => allocation.id === 'alloc-user-move')).toEqual({
+				id: 'alloc-user-move',
+				userId: 'user-move',
+				nodeId: 'node-b',
+				xrayUuid: 'uuid-move',
+				port: 10001,
+				speedLimitMbps: 300,
+			});
+			expect(env.DB.nodes.get('node-a')?.activeConnections).toBe(3);
+			expect(env.DB.nodes.get('node-b')?.activeConnections).toBe(2);
+		});
+
+		it('rejects moves to inactive nodes', async () => {
+			env.CF_ACCESS_AUD = '';
+			env.DB.nodes.set('node-a', {
+				id: 'node-a',
+				name: 'Tokyo 1',
+				publicIp: '203.0.113.10',
+				status: 'active',
+				activeConnections: 2,
+				cpuLoad: 0,
+				lastPing: new Date().toISOString(),
+			});
+			env.DB.nodes.set('node-b', {
+				id: 'node-b',
+				name: 'Tokyo 2',
+				publicIp: '203.0.113.11',
+				status: 'offline',
+				activeConnections: 0,
+				cpuLoad: 0,
+				lastPing: null,
+			});
+			env.DB.users.set('user-move', {
+				id: 'user-move',
+				email: 'move@example.com',
+				passwordHash: 'sha256:salt:hash',
+				tier: 'basic',
+				isActive: 1,
+				bandwidthLimitMbps: 300,
+				creditBalance: 0,
+				totalBytesUsed: 0,
+				currentUsagePeriodStart: null,
+				currentPeriodBytesUsed: 0,
+				subscriptionPlan: 'basic',
+				subscriptionEndDate: null,
+				emailVerified: 1,
+			});
+			env.DB.allocations.push({
+				id: 'alloc-user-move',
+				userId: 'user-move',
+				nodeId: 'node-a',
+				xrayUuid: 'uuid-move',
+				port: 12001,
+				speedLimitMbps: 300,
+			});
+
+			const response = await worker.fetch(
+				new Request('http://example.com/api/admin/users/user-move/move', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ nodeId: 'node-b' }),
+				}),
+				env as never,
+				createExecutionContext(),
+			);
+
+			expect(response.status).toBe(400);
+			expect(await response.json()).toEqual({
+				error: 'Destination node must be active before reassignment',
+			});
+			expect(env.DB.allocations.find((allocation) => allocation.id === 'alloc-user-move')?.nodeId).toBe('node-a');
 		});
 
 	it('uses PBKDF2 for new signups', async () => {
