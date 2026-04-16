@@ -5,11 +5,38 @@ import Dashboard from './pages/Dashboard';
 import { AuthContext, type AuthStatus } from './auth';
 import { buildAdminAccessLoginUrl, buildApiUrl, isApiCrossOrigin } from './api';
 
+const API_ACCESS_BOOTSTRAP_KEY = 'blue-admin-api-access-bootstrap-started';
+
 export default function App() {
   const [adminEmail, setAdminEmail] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [status, setStatus] = useState<AuthStatus>('loading');
   const needsApiAccessLogin = isApiCrossOrigin();
+
+  const openAccessLogin = () => {
+    if (!needsApiAccessLogin) {
+      void refreshSession();
+      return;
+    }
+
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(API_ACCESS_BOOTSTRAP_KEY, '1');
+      window.location.assign(buildAdminAccessLoginUrl(window.location.href));
+    }
+  };
+
+  const bootstrapApiAccessOnce = () => {
+    if (!needsApiAccessLogin || typeof window === 'undefined') {
+      return false;
+    }
+
+    if (window.sessionStorage.getItem(API_ACCESS_BOOTSTRAP_KEY) === '1') {
+      return false;
+    }
+
+    openAccessLogin();
+    return true;
+  };
 
   const refreshSession = async () => {
     setStatus('loading');
@@ -31,8 +58,14 @@ export default function App() {
       setAdminEmail(data.admin?.email || null);
       setAuthError(null);
       setStatus('authenticated');
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(API_ACCESS_BOOTSTRAP_KEY);
+      }
     } catch (err) {
       console.error('Failed to refresh admin session', err);
+      if (bootstrapApiAccessOnce()) {
+        return;
+      }
       setAdminEmail(null);
       setAuthError('Unable to reach the admin API. Complete Cloudflare Access for the API origin, then try again.');
       setStatus('unauthenticated');
@@ -43,19 +76,13 @@ export default function App() {
     void refreshSession();
   }, []);
 
-  const openAccessLogin = () => {
-    if (!needsApiAccessLogin) {
-      void refreshSession();
-      return;
-    }
-
-    window.location.assign(buildAdminAccessLoginUrl(window.location.href));
-  };
-
   const signOut = () => {
     setAdminEmail(null);
     setAuthError(null);
     setStatus('unauthenticated');
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.removeItem(API_ACCESS_BOOTSTRAP_KEY);
+    }
     window.location.assign('/cdn-cgi/access/logout');
   };
 
@@ -64,6 +91,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={status === 'authenticated' ? <Dashboard /> : <Login />} />
+          <Route path="/dashboard" element={status === 'authenticated' ? <Dashboard /> : <Login />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

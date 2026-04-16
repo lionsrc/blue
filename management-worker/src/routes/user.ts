@@ -12,9 +12,7 @@ import {
     getCurrentPeriodBytesUsed, getPlanMonthlyQuotaBytes,
     isQuotaExceeded, bytesToGb, getUsagePeriodStart,
 } from '../plans.js';
-
-const ALLOCATION_PORT_MIN_VAL = 10000;
-const ALLOCATION_PORT_MAX_VAL = 50000;
+import { findAvailableAllocationPort } from '../allocations.js';
 
 const user = new Hono<{ Bindings: Bindings }>();
 
@@ -344,18 +342,7 @@ user.get('/api/subscription', authenticateToken, async (c: any) => {
         }
 
         // Find an unused port on this node
-        const { results: existingAllocations } = await c.env.DB.prepare(
-            `SELECT port FROM UserAllocations WHERE nodeId = ?`
-        ).bind(bestNode.id).all() as { results: { port: number }[] };
-        const usedPorts = new Set(existingAllocations.map((a: { port: number }) => a.port));
-
-        let port: number | null = null;
-        for (let candidate = ALLOCATION_PORT_MIN_VAL; candidate <= ALLOCATION_PORT_MAX_VAL; candidate++) {
-            if (!usedPorts.has(candidate)) {
-                port = candidate;
-                break;
-            }
-        }
+        const port = await findAvailableAllocationPort(c.env.DB, bestNode.id as string);
 
         if (port === null) {
             return c.json({ error: 'No available ports on the proxy node.' }, 503);
@@ -388,7 +375,7 @@ user.get('/api/subscription', authenticateToken, async (c: any) => {
     });
 
     // 4. Build the VLESS link
-    const websocketPath = `/sp-ws?token=${encodeURIComponent(sessionToken)}`;
+    const websocketPath = `/sp-ws/${encodeURIComponent(sessionToken)}`;
     const vlessLink = `vless://${allocation.xrayUuid}@${allocation.domainName}:443?encryption=none&security=tls&sni=${allocation.domainName}&fp=chrome&type=ws&host=${allocation.domainName}&path=${encodeURIComponent(websocketPath)}`;
 
     // Base64 encode the link for standard subscription clients

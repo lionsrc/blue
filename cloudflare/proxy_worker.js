@@ -107,6 +107,7 @@ function buildBackendRequest(request, backendHost, backendPath = '/sp-ws', backe
 
 function extractSessionToken(requestUrl) {
     const url = new URL(requestUrl);
+
     const pathParts = url.pathname.split('/').filter(Boolean);
 
     if (pathParts.length !== 2 || pathParts[0] !== 'sp-ws') {
